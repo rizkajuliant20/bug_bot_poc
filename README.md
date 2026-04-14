@@ -4,7 +4,7 @@ A Slack bot that automatically creates bug tickets in Notion with AI-powered dia
 
 ## Features
 
-- 🤖 **AI-Powered Diagnosis**: Uses OpenAI GPT-4 to analyze bug reports and provide:
+- 🤖 **AI-Powered Diagnosis**: Uses OpenAI GPT-3.5 turbo to analyze bug reports and provide:
   - Severity assessment (Critical/High/Medium/Low)
   - Category classification (Backend/Frontend/Database/API/etc.)
   - Root cause analysis
