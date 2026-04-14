@@ -145,6 +145,7 @@ export async function generateBugSummary(bugDescription, diagnosis, threadMessag
   });
   
   let appName = 'App';
+  let detectedAppName = null;
   
   const allText = [
     bugDescription,
@@ -153,18 +154,24 @@ export async function generateBugSummary(bugDescription, diagnosis, threadMessag
   
   if (allText.includes('jago app') || allText.includes('jagoapp')) {
     appName = 'Jago App';
+    detectedAppName = 'Jago App';
     logInfo('Detected app name from text', { appName: 'Jago App' });
   } else if (allText.includes('jagoan app') || allText.includes('jagoanapp')) {
     appName = 'Jagoan App';
+    detectedAppName = 'Jagoan App';
     logInfo('Detected app name from text', { appName: 'Jagoan App' });
   } else if (allText.includes('depot portal') || allText.includes('depot')) {
     appName = 'Depot Portal';
+    detectedAppName = 'Depot Portal';
   } else if (allText.includes('service') || allText.includes('backend') || allText.includes('api')) {
     appName = 'Service';
+    detectedAppName = 'Service';
   } else if (diagnosis.platform && diagnosis.platform.includes('android')) {
     appName = 'Jagoan App';
+    detectedAppName = 'Jagoan App';
   } else if (diagnosis.platform && diagnosis.platform.includes('ios')) {
     appName = 'Jagoan App';
+    detectedAppName = 'Jagoan App';
   }
 
   const prompt = `Create a concise bug ticket title in this exact format:
@@ -197,9 +204,9 @@ Keep the description brief and clear (max 8 words after app name). Focus on the 
     const title = response.choices[0].message.content.trim();
     const duration = Date.now() - startTime;
     logSuccess('Bug title generated', { duration: `${duration}ms`, title });
-    return title;
+    return { title, appName: detectedAppName };
   } catch (error) {
     logError('Bug title generation failed', error);
-    return `[Bug][App] ${bugDescription.substring(0, 50)}...`;
+    return { title: `[Bug][App] ${bugDescription.substring(0, 50)}...`, appName: detectedAppName };
   }
 }

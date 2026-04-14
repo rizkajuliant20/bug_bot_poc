@@ -4,26 +4,45 @@ A Slack bot that automatically creates bug tickets in Notion with AI-powered dia
 
 ## Features
 
-- 🤖 **AI-Powered Diagnosis**: Uses OpenAI GPT-4 to analyze bug reports and provide:
+- 🤖 **AI-Powered Diagnosis**: Uses OpenAI GPT-3.5 to analyze bug reports and provide:
   - Severity assessment (Critical/High/Medium/Low)
   - Category classification (Backend/Frontend/Database/API/etc.)
   - Root cause analysis
   - Suggested fixes
   - Affected components
   - Priority level (P0-P3)
+  - Platform detection (iOS/Android/Web/Backend)
+  - Team assignment
+
+- 🏷️ **Smart App Detection**: Automatically detects and tags bugs by app:
+  - **Jago App** - Detects "jago app" mentions in bug description or thread comments
+  - **Jagoan App** - Detects "jagoan app" mentions or iOS/Android platform
+  - **Depot Portal** - Detects "depot portal" or "depot" mentions
+  - **Service** - Detects "service", "backend", or "api" mentions
+  - Creates separate log files per app for better tracking
 
 - 💬 **Slack Integration**: 
-  - Monitors messages containing bug-related keywords
-  - Responds to @mentions
+  - React with 🐞/🐛 emoji on any message to create bug ticket
+  - Responds to @mentions with bug keywords
   - Supports `/bug` slash command
-  - Captures full thread context
+  - Captures full thread context and comments
   - Provides real-time status updates with reactions
+  - Sends notifications to bug tracking channel
 
 - 📝 **Notion Integration**:
   - Creates structured bug tickets automatically
   - Includes AI diagnosis and recommendations
   - Links back to Slack thread
   - Captures thread context and reporter info
+  - Polls Notion for manually created bugs (every 2 minutes)
+  - Skips automation-created bugs to avoid duplicates
+
+- 📊 **Comprehensive Logging**:
+  - Daily log files in `logs/` directory
+  - Separate logs per app (jago-app-YYYY-MM-DD.log, etc.)
+  - Error logs separated (error-YYYY-MM-DD.log)
+  - Automatic cleanup of logs older than 7 days
+  - Tracks all triggers, flows, API calls, and errors with timestamps
 
 ## Prerequisites
 
@@ -69,6 +88,7 @@ Go to **OAuth & Permissions** and add these scopes:
 #### Event Subscriptions:
 Go to **Event Subscriptions** and subscribe to:
 - `app_mention`
+- `reaction_added`
 - `message.channels`
 - `message.groups`
 - `message.im`
@@ -130,6 +150,7 @@ Edit `.env` with your credentials:
 SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_SIGNING_SECRET=your-signing-secret
 SLACK_APP_TOKEN=xapp-your-app-token
+SLACK_BUG_TRACKING_CHANNEL=C0AT3CEB5ED  # Optional: Channel ID for bug notifications
 
 NOTION_API_KEY=secret_your-notion-integration-token
 NOTION_DATABASE_ID=your-database-id
@@ -155,25 +176,37 @@ npm run dev
 
 ### Using the Bot in Slack
 
-#### Method 1: Automatic Detection
-Simply mention keywords in any message:
+#### Method 1: React with Bug Emoji
+React to any message with 🐞 (lady_beetle), 🐛 (bug), or 🪲 (beetle) emoji:
 ```
-"We have a bug in the login page - users can't authenticate"
-"There's an error when submitting the form"
-"The API is returning 500 errors"
+User: "Login is broken on the app"
+[React with 🐞 emoji] → Bot creates ticket
 ```
-
-The bot automatically detects messages containing: `bug`, `issue`, `error`, `problem`
 
 #### Method 2: @Mention
 ```
-@BugBot There's a critical bug in the payment processing
+@BugBot There's a critical bug in the payment processing on Jago App
 ```
 
 #### Method 3: Slash Command
 ```
-/bug Users are experiencing timeout errors on checkout
+/bug Users are experiencing timeout errors on checkout in Jagoan App
 ```
+
+#### App Detection Examples
+The bot automatically detects which app the bug is for:
+
+```
+"This bug happens in Jago App" → Tagged as [Bug][Jago App]
+"Jagoan app crashes on startup" → Tagged as [Bug][Jagoan App]  
+"Depot portal login issue" → Tagged as [Bug][Depot Portal]
+"Backend service is down" → Tagged as [Bug][Service]
+```
+
+You can mention the app name in:
+- The original bug report
+- Any reply/comment in the thread
+- Thread discussions
 
 ### What Happens Next
 
@@ -195,13 +228,24 @@ BotBugWithAI/
 │   ├── config.js                # Configuration and validation
 │   ├── handlers/
 │   │   └── bugHandler.js        # Bug report processing logic
-│   └── services/
-│       ├── aiService.js         # OpenAI integration
-│       ├── notionService.js     # Notion API integration
-│       └── slackService.js      # Slack helper functions
+│   ├── services/
+│   │   ├── aiService.js         # OpenAI integration & app detection
+│   │   ├── notionService.js     # Notion API integration
+│   │   ├── notionPolling.js     # Notion polling for manual bugs
+│   │   └── slackService.js      # Slack helper functions
+│   └── utils/
+│       └── logger.js            # Logging utility with file output
+├── logs/                        # Log files (auto-created)
+│   ├── app-YYYY-MM-DD.log       # Main application logs
+│   ├── jago-app-YYYY-MM-DD.log  # Jago App specific logs
+│   ├── jagoan-app-YYYY-MM-DD.log # Jagoan App specific logs
+│   ├── depot-portal-YYYY-MM-DD.log # Depot Portal specific logs
+│   ├── service-YYYY-MM-DD.log   # Service specific logs
+│   └── error-YYYY-MM-DD.log     # Error logs
 ├── .env                         # Environment variables (create this)
 ├── .env.example                 # Environment template
 ├── .gitignore
+├── .notion-tracking.json        # Tracked Notion bugs (auto-created)
 ├── package.json
 └── README.md
 ```
@@ -210,20 +254,86 @@ BotBugWithAI/
 
 When a bug is reported, the bot creates a Notion ticket like this:
 
-**Title**: `[HIGH] Login authentication fails with 401 error`
+**Title**: `[Bug][Jago App] Login authentication fails with 401 error`
 
 **Properties**:
-- Status: To Do
+- Status: Not started
 - Priority: P1
 - Severity: High
 - Category: Backend
+- Platform: iOS, Android
+- Team: Eng
 - Reporter: John Doe
+- Slack Thread: [Link to thread]
 
 **Content**:
-- Bug Description
-- 🤖 AI Diagnosis with root cause analysis
-- 💡 Suggested fix
-- Thread context from Slack
+- **Bug Description**: Original bug report
+- **Precondition**: Conditions before bug occurs
+- **Steps to Reproduce**: Numbered steps
+- **Actual Result**: What actually happens
+- **Expected Result**: What should happen
+- **🔍 QA Diagnosis**: AI-generated root cause and suggested fix
+- **💬 Thread Summary**: Summary of thread discussion (if any)
+
+## Logging & Monitoring
+
+### Log Files
+All logs are stored in the `logs/` directory with daily rotation:
+
+- **`app-YYYY-MM-DD.log`**: All application logs
+- **`jago-app-YYYY-MM-DD.log`**: Jago App specific bugs
+- **`jagoan-app-YYYY-MM-DD.log`**: Jagoan App specific bugs
+- **`depot-portal-YYYY-MM-DD.log`**: Depot Portal specific bugs
+- **`service-YYYY-MM-DD.log`**: Service/Backend specific bugs
+- **`error-YYYY-MM-DD.log`**: All errors across all apps
+
+### Log Format
+```
+[2026-04-14T09:15:47.802Z] [SUCCESS] ✅ Notion ticket created {"notionUrl":"https://notion.so/...","pageId":"...","appName":"Jago App"}
+```
+
+### Log Retention
+- Logs older than 7 days are automatically deleted
+- Each log entry includes timestamp, level, message, and metadata
+- Error logs include full stack traces
+
+### Viewing Logs
+```bash
+# View today's main log
+tail -f logs/app-$(date +%Y-%m-%d).log
+
+# View Jago App logs
+tail -f logs/jago-app-$(date +%Y-%m-%d).log
+
+# View errors only
+tail -f logs/error-$(date +%Y-%m-%d).log
+
+# Search for specific bug
+grep "Bug ticket created" logs/app-*.log
+```
+
+## Advanced Features
+
+### Notion Polling
+The bot polls your Notion database every 2 minutes to detect manually created bugs:
+- Only notifies for bugs created manually (without Slack Thread URL)
+- Skips automation-created bugs to avoid duplicate notifications
+- Sends notifications to configured bug tracking channel
+- Tracks processed bugs in `.notion-tracking.json`
+
+### Bug Tracking Channel
+Configure `SLACK_BUG_TRACKING_CHANNEL` in `.env` to receive notifications for:
+- All automation-created bugs (from Slack)
+- Manually created bugs in Notion
+- Includes bug details, severity, priority, and links
+
+### Thread Context Analysis
+The bot analyzes the entire Slack thread:
+- Original bug report message
+- All replies and comments in the thread
+- Detects app name from any message in thread
+- Summarizes discussion for Notion ticket
+- Uses context for better AI diagnosis
 
 ## Troubleshooting
 

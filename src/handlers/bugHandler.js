@@ -48,16 +48,16 @@ export async function handleBugReport(client, message, say) {
     const diagnosis = await diagnoseBug(bugDescription, threadMessages);
     logInfo('AI diagnosis completed', { severity: diagnosis.severity, category: diagnosis.category, priority: diagnosis.priority });
     
-    const title = await generateBugSummary(bugDescription, diagnosis, threadMessages);
-    logInfo('Bug title generated', { title });
+    const { title, appName } = await generateBugSummary(bugDescription, diagnosis, threadMessages);
+    logInfo('Bug title generated', { title, appName });
     
     const threadSummary = await summarizeThread(threadMessages);
-    logInfo('Thread summary generated', { hasSummary: !!threadSummary });
+    logInfo('Thread summary generated', { hasSummary: !!threadSummary, appName });
 
     const slackThreadUrl = getSlackThreadUrl(team, channel, threadTs);
-    logInfo('Slack thread URL generated', { url: slackThreadUrl });
+    logInfo('Slack thread URL generated', { url: slackThreadUrl, appName });
 
-    logFlow('BUG_HANDLER', 'Creating Notion ticket');
+    logFlow('BUG_HANDLER', 'Creating Notion ticket', { appName });
     const notionPage = await createBugTicket({
       title,
       description: bugDescription,
@@ -69,7 +69,7 @@ export async function handleBugReport(client, message, say) {
     });
 
     const notionUrl = await getNotionPageUrl(notionPage.id);
-    logSuccess('Notion ticket created', { notionUrl, pageId: notionPage.id });
+    logSuccess('Notion ticket created', { notionUrl, pageId: notionPage.id, appName });
 
     try {
       await client.reactions.remove({
@@ -159,11 +159,11 @@ export async function handleBugReport(client, message, say) {
       `Bug ticket created: ${notionUrl}`,
       blocks
     );
-    logSuccess('Bug ticket response sent to thread');
+    logSuccess('Bug ticket response sent to thread', { appName });
 
     // Send notification to bug tracking channel
     if (config.slack.bugTrackingChannel) {
-      logFlow('BUG_HANDLER', 'Sending notification to bug tracking channel', { channel: config.slack.bugTrackingChannel });
+      logFlow('BUG_HANDLER', 'Sending notification to bug tracking channel', { channel: config.slack.bugTrackingChannel, appName });
       try {
         await client.chat.postMessage({
           channel: config.slack.bugTrackingChannel,
@@ -231,9 +231,9 @@ export async function handleBugReport(client, message, say) {
             },
           ],
         });
-        logSuccess('Bug notification sent to tracking channel', { channel: config.slack.bugTrackingChannel });
+        logSuccess('Bug notification sent to tracking channel', { channel: config.slack.bugTrackingChannel, appName });
       } catch (error) {
-        logError('Failed to send bug notification', error, { channel: config.slack.bugTrackingChannel });
+        logError('Failed to send bug notification', error, { channel: config.slack.bugTrackingChannel, appName });
       }
     }
 
