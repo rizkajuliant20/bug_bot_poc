@@ -2,6 +2,7 @@ import { Client } from '@notionhq/client';
 import { config } from '../config.js';
 import fs from 'fs';
 import path from 'path';
+import { logInfo, logSuccess, logError, logFlow, logWarn } from '../utils/logger.js';
 
 const notion = new Client({
   auth: config.notion.apiKey,
@@ -14,10 +15,12 @@ function loadTrackedBugs() {
   try {
     if (fs.existsSync(TRACKING_FILE)) {
       const data = fs.readFileSync(TRACKING_FILE, 'utf8');
-      return new Set(JSON.parse(data));
+      const bugs = new Set(JSON.parse(data));
+      logInfo('Tracked bugs loaded', { count: bugs.size });
+      return bugs;
     }
   } catch (error) {
-    console.error('Error loading tracked bugs:', error);
+    logError('Failed to load tracked bugs', error);
   }
   return new Set();
 }
@@ -26,18 +29,21 @@ function loadTrackedBugs() {
 function saveTrackedBugs(trackedBugs) {
   try {
     fs.writeFileSync(TRACKING_FILE, JSON.stringify([...trackedBugs]), 'utf8');
+    logInfo('Tracked bugs saved', { count: trackedBugs.size });
   } catch (error) {
-    console.error('Error saving tracked bugs:', error);
+    logError('Failed to save tracked bugs', error);
   }
 }
 
 // Poll Notion database for new bugs
 export async function pollNotionForNewBugs(slackClient) {
+  logFlow('NOTION_POLLING', 'Starting poll cycle');
   const trackedBugs = loadTrackedBugs();
   
   try {
     // Query Notion database for recent bugs (last 10 minutes)
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    logInfo('Querying Notion database', { since: tenMinutesAgo });
     
     const response = await notion.databases.query({
       database_id: config.notion.databaseId,
@@ -55,6 +61,8 @@ export async function pollNotionForNewBugs(slackClient) {
       ],
     });
 
+    logInfo('Notion query completed', { totalResults: response.results.length });
+    
     const newBugs = [];
     
     for (const page of response.results) {
@@ -62,6 +70,8 @@ export async function pollNotionForNewBugs(slackClient) {
       if (trackedBugs.has(page.id)) {
         continue;
       }
+      
+      logFlow('NOTION_POLLING', 'Processing new page', { pageId: page.id });
 
       // Extract bug info
       const title = page.properties.Title?.title?.[0]?.plain_text || 'Untitled Bug';
@@ -75,15 +85,19 @@ export async function pollNotionForNewBugs(slackClient) {
 
       // Skip if it doesn't have 'bug' tag
       if (!tags.includes('bug')) {
+        logInfo('Skipping page without bug tag', { pageId: page.id, tags });
         trackedBugs.add(page.id); // Still track it to avoid checking again
         continue;
       }
 
       // Skip if it has Slack Thread URL (automation-created)
       if (slackThread) {
+        logInfo('Skipping automation-created bug', { pageId: page.id, slackThread });
         trackedBugs.add(page.id); // Track it but don't notify
         continue;
       }
+      
+      logSuccess('Found manually created bug', { pageId: page.id, title });
 
       newBugs.push({
         id: page.id,
@@ -104,17 +118,20 @@ export async function pollNotionForNewBugs(slackClient) {
 
     // Save updated tracking
     if (newBugs.length > 0) {
+      logSuccess('Poll cycle completed', { newBugsFound: newBugs.length });
       saveTrackedBugs(trackedBugs);
       
       // Send notifications for all new bugs with 'bug' tag
       for (const bug of newBugs) {
         await sendBugNotification(slackClient, bug);
       }
+    } else {
+      logInfo('Poll cycle completed - no new bugs found');
     }
 
     return newBugs;
   } catch (error) {
-    console.error('Error polling Notion:', error);
+    logError('Notion polling failed', error);
     return [];
   }
 }
@@ -122,9 +139,12 @@ export async function pollNotionForNewBugs(slackClient) {
 // Send Slack notification for manually created bug
 async function sendBugNotification(slackClient, bug) {
   if (!config.slack.bugTrackingChannel) {
+    logWarn('Bug tracking channel not configured, skipping notification');
     return;
   }
 
+  logFlow('NOTION_POLLING', 'Sending bug notification', { bugId: bug.id, title: bug.title });
+  
   try {
     await slackClient.chat.postMessage({
       channel: config.slack.bugTrackingChannel,
@@ -184,17 +204,18 @@ async function sendBugNotification(slackClient, bug) {
       ],
     });
     
-    console.log(`Notification sent for manually created bug: ${bug.title}`);
+    logSuccess('Notification sent for manually created bug', { bugId: bug.id, title: bug.title });
   } catch (error) {
-    console.error('Error sending bug notification:', error);
+    logError('Failed to send bug notification', error, { bugId: bug.id, title: bug.title });
   }
 }
 
 // Start polling interval
 export function startNotionPolling(slackClient, intervalMinutes = 2) {
-  console.log(`Starting Notion polling every ${intervalMinutes} minutes...`);
+  logSuccess('Notion polling service started', { intervalMinutes });
   
   // Initial poll
+  logInfo('Running initial poll');
   pollNotionForNewBugs(slackClient);
   
   // Set up interval

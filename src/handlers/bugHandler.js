@@ -2,11 +2,20 @@ import { diagnoseBug, generateBugSummary, summarizeThread } from '../services/ai
 import { createBugTicket, getNotionPageUrl } from '../services/notionService.js';
 import { getThreadMessages, getUserInfo, getSlackThreadUrl, sendThreadReply } from '../services/slackService.js';
 import { config } from '../config.js';
+import { logInfo, logSuccess, logError, logFlow } from '../utils/logger.js';
 
 export async function handleBugReport(client, message, say) {
   const { text, user, channel, ts, thread_ts, team } = message;
 
   const threadTs = thread_ts || ts;
+  
+  logFlow('BUG_HANDLER', 'Started processing bug report', { 
+    user, 
+    channel, 
+    ts, 
+    threadTs,
+    messagePreview: text.substring(0, 100) 
+  });
   
   try {
     try {
@@ -23,8 +32,10 @@ export async function handleBugReport(client, message, say) {
 
     const bugDescription = text.replace(/<@[A-Z0-9]+>/g, '').trim();
     
+    logFlow('BUG_HANDLER', 'Fetching thread context', { channel, threadTs });
     const threadMessages = await getThreadMessages(client, channel, threadTs);
     const reporterName = await getUserInfo(client, user);
+    logInfo('Thread context retrieved', { messageCount: threadMessages.length, reporter: reporterName });
 
     await sendThreadReply(
       client,
@@ -33,12 +44,20 @@ export async function handleBugReport(client, message, say) {
       '🤖 Analyzing bug report with AI...'
     );
 
+    logFlow('BUG_HANDLER', 'Starting AI analysis', { descriptionLength: bugDescription.length });
     const diagnosis = await diagnoseBug(bugDescription, threadMessages);
+    logInfo('AI diagnosis completed', { severity: diagnosis.severity, category: diagnosis.category, priority: diagnosis.priority });
+    
     const title = await generateBugSummary(bugDescription, diagnosis, threadMessages);
+    logInfo('Bug title generated', { title });
+    
     const threadSummary = await summarizeThread(threadMessages);
+    logInfo('Thread summary generated', { hasSummary: !!threadSummary });
 
     const slackThreadUrl = getSlackThreadUrl(team, channel, threadTs);
+    logInfo('Slack thread URL generated', { url: slackThreadUrl });
 
+    logFlow('BUG_HANDLER', 'Creating Notion ticket');
     const notionPage = await createBugTicket({
       title,
       description: bugDescription,
@@ -50,6 +69,7 @@ export async function handleBugReport(client, message, say) {
     });
 
     const notionUrl = await getNotionPageUrl(notionPage.id);
+    logSuccess('Notion ticket created', { notionUrl, pageId: notionPage.id });
 
     try {
       await client.reactions.remove({
@@ -139,9 +159,11 @@ export async function handleBugReport(client, message, say) {
       `Bug ticket created: ${notionUrl}`,
       blocks
     );
+    logSuccess('Bug ticket response sent to thread');
 
     // Send notification to bug tracking channel
     if (config.slack.bugTrackingChannel) {
+      logFlow('BUG_HANDLER', 'Sending notification to bug tracking channel', { channel: config.slack.bugTrackingChannel });
       try {
         await client.chat.postMessage({
           channel: config.slack.bugTrackingChannel,
@@ -209,14 +231,14 @@ export async function handleBugReport(client, message, say) {
             },
           ],
         });
-        console.log('Bug notification sent to tracking channel');
+        logSuccess('Bug notification sent to tracking channel', { channel: config.slack.bugTrackingChannel });
       } catch (error) {
-        console.error('Error sending bug notification:', error);
+        logError('Failed to send bug notification', error, { channel: config.slack.bugTrackingChannel });
       }
     }
 
   } catch (error) {
-    console.error('Error handling bug report:', error);
+    logError('Bug report handling failed', error, { user, channel, ts });
     
     try {
       await client.reactions.add({
@@ -226,7 +248,7 @@ export async function handleBugReport(client, message, say) {
       });
     } catch (err) {
       if (err.data?.error !== 'already_reacted') {
-        console.error('Error adding error reaction:', err);
+        logError('Failed to add error reaction', err);
       }
     }
 

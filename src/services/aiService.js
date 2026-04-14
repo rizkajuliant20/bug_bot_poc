@@ -1,11 +1,17 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
+import { logInfo, logSuccess, logError, logFlow } from '../utils/logger.js';
 
 const openai = new OpenAI({
   apiKey: config.openai.apiKey,
 });
 
 export async function diagnoseBug(bugDescription, threadMessages = []) {
+  logFlow('AI_SERVICE', 'Starting bug diagnosis', { 
+    descriptionLength: bugDescription.length, 
+    threadMessageCount: threadMessages.length 
+  });
+  
   const context = threadMessages.length > 0
     ? `\n\nThread context:\n${threadMessages.map(m => `- ${m.user}: ${m.text}`).join('\n')}`
     : '';
@@ -35,6 +41,8 @@ Provide your analysis in the following JSON format:
 Extract as much structured information as possible from the bug report. If information is missing, use reasonable defaults.`;
 
   try {
+    logInfo('Calling OpenAI API for diagnosis');
+    const startTime = Date.now();
     const response = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
@@ -52,9 +60,15 @@ Extract as much structured information as possible from the bug report. If infor
     });
 
     const diagnosis = JSON.parse(response.choices[0].message.content);
+    const duration = Date.now() - startTime;
+    logSuccess('Bug diagnosis completed', { 
+      duration: `${duration}ms`, 
+      severity: diagnosis.severity, 
+      category: diagnosis.category 
+    });
     return diagnosis;
   } catch (error) {
-    console.error('AI diagnosis error:', error);
+    logError('AI diagnosis failed', error, { descriptionLength: bugDescription.length });
     return {
       severity: 'medium',
       category: 'other',
@@ -75,8 +89,11 @@ Extract as much structured information as possible from the bug report. If infor
 
 export async function summarizeThread(threadMessages) {
   if (threadMessages.length <= 1) {
+    logInfo('Skipping thread summary - insufficient messages', { count: threadMessages.length });
     return null;
   }
+  
+  logFlow('AI_SERVICE', 'Starting thread summarization', { messageCount: threadMessages.length });
 
   const conversation = threadMessages
     .map(m => `${m.user}: ${m.text}`)
@@ -93,6 +110,8 @@ ${conversation}
 Provide a concise summary (max 200 words) focusing on technical details.`;
 
   try {
+    logInfo('Calling OpenAI API for thread summary');
+    const startTime = Date.now();
     const response = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
@@ -109,14 +128,22 @@ Provide a concise summary (max 200 words) focusing on technical details.`;
       max_tokens: 300,
     });
 
-    return response.choices[0].message.content.trim();
+    const summary = response.choices[0].message.content.trim();
+    const duration = Date.now() - startTime;
+    logSuccess('Thread summary completed', { duration: `${duration}ms`, summaryLength: summary.length });
+    return summary;
   } catch (error) {
-    console.error('Thread summarization error:', error);
+    logError('Thread summarization failed', error, { messageCount: threadMessages.length });
     return null;
   }
 }
 
 export async function generateBugSummary(bugDescription, diagnosis, threadMessages = []) {
+  logFlow('AI_SERVICE', 'Generating bug title', { 
+    descriptionLength: bugDescription.length,
+    threadMessageCount: threadMessages.length 
+  });
+  
   let appName = 'App';
   
   const allText = [
@@ -126,8 +153,10 @@ export async function generateBugSummary(bugDescription, diagnosis, threadMessag
   
   if (allText.includes('jago app') || allText.includes('jagoapp')) {
     appName = 'Jago App';
+    logInfo('Detected app name from text', { appName: 'Jago App' });
   } else if (allText.includes('jagoan app') || allText.includes('jagoanapp')) {
     appName = 'Jagoan App';
+    logInfo('Detected app name from text', { appName: 'Jagoan App' });
   } else if (allText.includes('depot portal') || allText.includes('depot')) {
     appName = 'Depot Portal';
   } else if (allText.includes('service') || allText.includes('backend') || allText.includes('api')) {
@@ -147,6 +176,8 @@ Category: ${diagnosis.category}
 Keep the description brief and clear (max 8 words after app name). Focus on the core issue.`;
 
   try {
+    logInfo('Calling OpenAI API for bug title generation', { appName });
+    const startTime = Date.now();
     const response = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
@@ -163,9 +194,12 @@ Keep the description brief and clear (max 8 words after app name). Focus on the 
       max_tokens: 60,
     });
 
-    return response.choices[0].message.content.trim();
+    const title = response.choices[0].message.content.trim();
+    const duration = Date.now() - startTime;
+    logSuccess('Bug title generated', { duration: `${duration}ms`, title });
+    return title;
   } catch (error) {
-    console.error('Bug summary error:', error);
+    logError('Bug title generation failed', error);
     return `[Bug][App] ${bugDescription.substring(0, 50)}...`;
   }
 }
