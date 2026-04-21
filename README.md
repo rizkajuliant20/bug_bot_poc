@@ -1,365 +1,415 @@
-# Slack Bug Bot with AI Diagnosis
+# Slack Bug Bot
 
-A Slack bot that automatically creates bug tickets in Notion with AI-powered diagnosis. When users report bugs in Slack threads, the bot analyzes the issue using OpenAI, provides intelligent diagnosis, and creates a structured ticket in your Notion database.
+A high-performance Slack bot written in Go that automatically creates bug tickets in Notion with AI-powered diagnosis and **multi-issue detection**.
 
-## Features
+## Why Go?
 
-- 🤖 **AI-Powered Diagnosis**: Uses OpenAI GPT-3.5 to analyze bug reports and provide:
-  - Severity assessment (Critical/High/Medium/Low)
-  - Category classification (Backend/Frontend/Database/API/etc.)
-  - Root cause analysis
-  - Suggested fixes
-  - Affected components
-  - Priority level (P0-P3)
-  - Platform detection (iOS/Android/Web/Backend)
-  - Team assignment
+Built with Go for optimal performance and deployment simplicity:
+- ✅ **Easy Deployment**: Single compiled binary (9.8MB), no runtime dependencies
+- ✅ **Better Performance**: Lower memory usage (~30MB) and faster execution
+- ✅ **Smaller Docker Images**: ~25MB vs ~300MB for Node.js
+- ✅ **Production Ready**: Built-in concurrency and robust error handling
 
-- 🏷️ **Smart App Detection**: Automatically detects and tags bugs by app:
-  - **Jago App** - Detects "jago app" mentions in bug description or thread comments
-  - **Jagoan App** - Detects "jagoan app" mentions or iOS/Android platform
-  - **Depot Portal** - Detects "depot portal" or "depot" mentions
-  - **Service** - Detects "service", "backend", or "api" mentions
-  - Creates separate log files per app for better tracking
+## ✨ Key Features
 
-- 💬 **Slack Integration**: 
-  - React with 🐞/🐛 emoji on any message to create bug ticket
-  - Responds to @mentions with bug keywords
-  - Supports `/bug` slash command
-  - Captures full thread context and comments
-  - Provides real-time status updates with reactions
-  - Sends notifications to bug tracking channel
+### 🎯 Multi-Issue Detection (NEW!)
+Bot automatically analyzes thread + all replies to detect **multiple distinct issues** and lets you choose which ones to create tickets for.
 
-- 📝 **Notion Integration**:
-  - Creates structured bug tickets automatically
-  - Includes AI diagnosis and recommendations
-  - Links back to Slack thread
-  - Captures thread context and reporter info
-  - Polls Notion for manually created bugs (every 2 minutes)
-  - Skips automation-created bugs to avoid duplicates
+**Example:**
+```
+User: "Ada 3 masalah:
+1. Spin tidak bisa diklik
+2. 🚀 Payment gagal tapi saldo terpotong  
+3. Notifikasi tidak muncul"
 
-- 📊 **Comprehensive Logging**:
-  - Daily log files in `logs/` directory
-  - Separate logs per app (jago-app-YYYY-MM-DD.log, etc.)
-  - Error logs separated (error-YYYY-MM-DD.log)
-  - Automatic cleanup of logs older than 7 days
-  - Tracks all triggers, flows, API calls, and errors with timestamps
+Bot: 
+🔍 Detected 3 separate issues in this thread:
 
-## Prerequisites
+Issue 1: Spin tidak bisa diklik
+└ Description...
+└ Severity: high | Category: Frontend
 
-- Node.js 18+ 
-- Slack workspace with admin access
-- Notion workspace with integration access
-- OpenAI API key
+Issue 2: Payment gagal tapi saldo terpotong
+└ Description...
+└ Severity: critical | Category: Backend
 
-## Setup
+Issue 3: Notifikasi tidak muncul
+└ Description...
+└ Severity: medium | Category: Backend
 
-### 1. Clone and Install
+Which issues would you like to create tickets for?
 
-```bash
-cd /Users/rizkajuliant20/Documents/BotBugWithAI
-npm install
+[✅ Create Issue 1] [✅ Create Issue 2] [✅ Create Issue 3]
+[✅ Create All Issues] [❌ Cancel]
 ```
 
-### 2. Slack App Configuration
+**Interactive Buttons:**
+- Click specific issue to create only that ticket
+- Click "Create All" to create all tickets at once
+- Click "Cancel" to abort
+- Buttons auto-disable after click to prevent double submission
 
-1. Go to [api.slack.com/apps](https://api.slack.com/apps)
-2. Click **Create New App** → **From scratch**
-3. Name it "Bug Bot" and select your workspace
+### 🤖 AI-Powered Analysis
+- **Smart Diagnosis**: Severity, category, priority, root cause analysis
+- **App Detection**: Auto-detects Jago App, Jagoan App, Depot Portal, Service
+- **Thread Summarization**: Condenses long discussions into key points
+- **Multi-Issue Recognition**: Identifies distinct problems in conversations
 
-#### Enable Socket Mode:
-- Go to **Socket Mode** in the sidebar
-- Enable Socket Mode
-- Generate an App-Level Token with `connections:write` scope
-- Save the token (starts with `xapp-`)
+### 💬 Slack Integration
+- **Triggers**: 
+  - 🐞 Emoji reaction (ladybug, bug, beetle)
+  - @mention with bug keywords
+  - `/bug` slash command
+- **Smart Emoji Management**:
+  - 👀 Processing indicator (auto-removed on completion/error)
+  - ✅ Success indicator
+  - ❌ Error indicator
+  - Auto-remove old status emojis on re-trigger
 
-#### Bot Token Scopes:
-Go to **OAuth & Permissions** and add these scopes:
-- `app_mentions:read`
-- `chat:write`
-- `channels:history`
-- `channels:read`
-- `groups:history`
-- `groups:read`
-- `im:history`
-- `mpim:history`
-- `reactions:write`
-- `users:read`
+### 📝 Notion Integration
+- Auto-creates structured tickets with full context
+- Properties: Status, Severity, Category, Priority, Platform, Team
+- Includes: Description, Diagnosis, Reporter, Slack Thread URL, Thread Summary
+- Polling for manually created bugs (every 2 minutes)
 
-#### Event Subscriptions:
-Go to **Event Subscriptions** and subscribe to:
-- `app_mention`
-- `reaction_added`
-- `message.channels`
-- `message.groups`
-- `message.im`
-- `message.mpim`
+### 📊 Comprehensive Logging
+- Daily log rotation with automatic cleanup
+- App-specific log files (Jago App, Jagoan App, Depot Portal, Service)
+- Separate error logs
+- All logs in `logs/` directory
 
-#### Slash Commands:
-Go to **Slash Commands** and create:
-- Command: `/bug`
-- Description: "Create a bug ticket with AI diagnosis"
-- Usage Hint: "[bug description]"
+## 📖 Usage Examples
 
-#### Install to Workspace:
-- Go to **Install App**
-- Click **Install to Workspace**
-- Copy the **Bot User OAuth Token** (starts with `xoxb-`)
+### Single Issue
+```
+1. User posts bug report in Slack
+2. Add 🐞 emoji reaction to the message
+3. Bot analyzes with AI
+4. Bot creates Notion ticket automatically
+5. Bot replies with ticket link
+```
 
-### 3. Notion Database Setup
+### Multiple Issues
+```
+1. User posts message with multiple problems
+2. Add 🐞 emoji reaction
+3. Bot detects 3 separate issues
+4. Bot shows interactive buttons
+5. User clicks "Create All Issues"
+6. Bot creates 3 Notion tickets
+7. Bot replies with all ticket links
+```
 
-1. Create a new Notion database with these properties:
-   - **Title** (Title)
-   - **Status** (Select): Options: To Do, In Progress, Done
-   - **Priority** (Select): Options: P0, P1, P2, P3
-   - **Severity** (Select): Options: Critical, High, Medium, Low
-   - **Category** (Select): Options: Backend, Frontend, Database, API, UI/UX, Performance, Security, Other
-   - **Reporter** (Text)
-   - **Slack Thread** (URL)
+### Re-trigger
+```
+1. Bug report already processed (has ✅ or ❌)
+2. Add 🐞 emoji again to re-process
+3. Bot removes old status emoji
+4. Bot re-analyzes and creates new ticket
+```
 
-2. Create a Notion Integration:
-   - Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
-   - Click **New integration**
-   - Name it "Bug Bot"
-   - Copy the **Internal Integration Token** (starts with `secret_`)
+## 🚀 Quick Start
 
-3. Share your database with the integration:
-   - Open your Notion database
-   - Click **Share** → Add your integration
-
-4. Get your Database ID:
-   - Open the database in Notion
-   - Copy the ID from the URL: `notion.so/[workspace]/[DATABASE_ID]?v=...`
-
-### 4. OpenAI API Key
-
-1. Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-2. Create a new API key
-3. Copy the key (starts with `sk-`)
-
-### 5. Environment Configuration
-
-Create a `.env` file:
+### 1. Install Go
 
 ```bash
+# macOS
+brew install go
+
+# Linux
+wget https://go.dev/dl/go1.26.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.26.linux-amd64.tar.gz
+```
+
+### 2. Setup
+
+```bash
+cd go-bug-bot
+
+# Install dependencies
+make install
+
+# Copy environment file
 cp .env.example .env
+
+# Edit .env with your credentials
+nano .env
 ```
 
-Edit `.env` with your credentials:
-
-```env
-SLACK_BOT_TOKEN=xoxb-your-bot-token
-SLACK_SIGNING_SECRET=your-signing-secret
-SLACK_APP_TOKEN=xapp-your-app-token
-SLACK_BUG_TRACKING_CHANNEL=C0AT3CEB5ED  # Optional: Channel ID for bug notifications
-
-NOTION_API_KEY=secret_your-notion-integration-token
-NOTION_DATABASE_ID=your-database-id
-
-OPENAI_API_KEY=sk-your-openai-api-key
-
-PORT=3000
-```
-
-## Usage
-
-### Start the Bot
+### 3. Run
 
 ```bash
-npm start
+# Development
+make run
+
+# Or build and run
+make build
+./bug-bot
 ```
 
-For development with auto-reload:
+## Docker Deployment
+
+### Build Image
 
 ```bash
-npm run dev
+make docker-build
 ```
 
-### Using the Bot in Slack
+### Run Container
 
-#### Method 1: React with Bug Emoji
-React to any message with 🐞 (lady_beetle), 🐛 (bug), or 🪲 (beetle) emoji:
-```
-User: "Login is broken on the app"
-[React with 🐞 emoji] → Bot creates ticket
-```
-
-#### Method 2: @Mention
-```
-@BugBot There's a critical bug in the payment processing on Jago App
+```bash
+docker run -d \
+  --name bug-bot \
+  --env-file .env \
+  -v $(pwd)/logs:/root/logs \
+  bug-bot:latest
 ```
 
-#### Method 3: Slash Command
+### Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  bug-bot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./logs:/root/logs
+      - ./.notion-tracking.json:/root/.notion-tracking.json
+    restart: unless-stopped
 ```
-/bug Users are experiencing timeout errors on checkout in Jagoan App
+
+## Deployment Options
+
+### 1. Single Binary Deployment
+
+```bash
+# Build for Linux
+GOOS=linux GOARCH=amd64 go build -o bug-bot ./cmd/bot
+
+# Copy to server
+scp bug-bot user@server:/opt/bug-bot/
+scp .env user@server:/opt/bug-bot/
+
+# Run on server
+ssh user@server
+cd /opt/bug-bot
+./bug-bot
 ```
 
-#### App Detection Examples
-The bot automatically detects which app the bug is for:
+### 2. Systemd Service
 
+Create `/etc/systemd/system/bug-bot.service`:
+
+```ini
+[Unit]
+Description=Slack Bug Bot
+After=network.target
+
+[Service]
+Type=simple
+User=bugbot
+WorkingDirectory=/opt/bug-bot
+ExecStart=/opt/bug-bot/bug-bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 ```
-"This bug happens in Jago App" → Tagged as [Bug][Jago App]
-"Jagoan app crashes on startup" → Tagged as [Bug][Jagoan App]  
-"Depot portal login issue" → Tagged as [Bug][Depot Portal]
-"Backend service is down" → Tagged as [Bug][Service]
+
+Enable and start:
+
+```bash
+sudo systemctl enable bug-bot
+sudo systemctl start bug-bot
+sudo systemctl status bug-bot
 ```
 
-You can mention the app name in:
-- The original bug report
-- Any reply/comment in the thread
-- Thread discussions
+### 3. Cloud Platforms
 
-### What Happens Next
+#### Railway
+```bash
+# Install Railway CLI
+npm install -g @railway/cli
 
-1. 👀 Bot adds "eyes" reaction to show it's processing
-2. 🤖 AI analyzes the bug and thread context
-3. 📝 Creates a Notion ticket with diagnosis
-4. ✅ Replies in thread with:
-   - Bug ticket summary
-   - AI diagnosis and root cause
-   - Suggested fix
-   - Link to Notion ticket
+# Deploy
+railway login
+railway init
+railway up
+```
+
+#### Fly.io
+```bash
+# Install flyctl
+curl -L https://fly.io/install.sh | sh
+
+# Deploy
+fly launch
+fly deploy
+```
+
+#### Google Cloud Run
+```bash
+# Build and push
+gcloud builds submit --tag gcr.io/PROJECT_ID/bug-bot
+
+# Deploy
+gcloud run deploy bug-bot \
+  --image gcr.io/PROJECT_ID/bug-bot \
+  --platform managed \
+  --region us-central1 \
+  --set-env-vars-file .env
+```
 
 ## Project Structure
 
 ```
-BotBugWithAI/
-├── src/
-│   ├── index.js                 # Main bot entry point
-│   ├── config.js                # Configuration and validation
-│   ├── handlers/
-│   │   └── bugHandler.js        # Bug report processing logic
+go-bug-bot/
+├── cmd/
+│   └── bot/
+│       └── main.go              # Application entry point
+├── pkg/
+│   ├── config/
+│   │   └── config.go            # Configuration management
+│   ├── logger/
+│   │   └── logger.go            # Logging utility
 │   ├── services/
-│   │   ├── aiService.js         # OpenAI integration & app detection
-│   │   ├── notionService.js     # Notion API integration
-│   │   ├── notionPolling.js     # Notion polling for manual bugs
-│   │   └── slackService.js      # Slack helper functions
-│   └── utils/
-│       └── logger.js            # Logging utility with file output
+│   │   ├── slack.go             # Slack API integration
+│   │   ├── notion.go            # Notion API integration
+│   │   └── openai.go            # OpenAI API integration
+│   └── handlers/
+│       └── bug_handler.go       # Bug report handling logic
 ├── logs/                        # Log files (auto-created)
-│   ├── app-YYYY-MM-DD.log       # Main application logs
-│   ├── jago-app-YYYY-MM-DD.log  # Jago App specific logs
-│   ├── jagoan-app-YYYY-MM-DD.log # Jagoan App specific logs
-│   ├── depot-portal-YYYY-MM-DD.log # Depot Portal specific logs
-│   ├── service-YYYY-MM-DD.log   # Service specific logs
-│   └── error-YYYY-MM-DD.log     # Error logs
-├── .env                         # Environment variables (create this)
-├── .env.example                 # Environment template
-├── .gitignore
-├── .notion-tracking.json        # Tracked Notion bugs (auto-created)
-├── package.json
+├── Dockerfile                   # Docker configuration
+├── Makefile                     # Build automation
+├── go.mod                       # Go dependencies
 └── README.md
 ```
 
-## Example Output
+## Environment Variables
 
-When a bug is reported, the bot creates a Notion ticket like this:
+```env
+# Slack Configuration
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
+SLACK_APP_TOKEN=xapp-...
+SLACK_BUG_TRACKING_CHANNEL=C0AT3CEB5ED  # Optional
 
-**Title**: `[Bug][Jago App] Login authentication fails with 401 error`
+# Notion Configuration
+NOTION_API_KEY=secret_...
+NOTION_DATABASE_ID=...
 
-**Properties**:
-- Status: Not started
-- Priority: P1
-- Severity: High
-- Category: Backend
-- Platform: iOS, Android
-- Team: Eng
-- Reporter: John Doe
-- Slack Thread: [Link to thread]
+# OpenAI Configuration
+OPENAI_API_KEY=sk-...
 
-**Content**:
-- **Bug Description**: Original bug report
-- **Precondition**: Conditions before bug occurs
-- **Steps to Reproduce**: Numbered steps
-- **Actual Result**: What actually happens
-- **Expected Result**: What should happen
-- **🔍 QA Diagnosis**: AI-generated root cause and suggested fix
-- **💬 Thread Summary**: Summary of thread discussion (if any)
-
-## Logging & Monitoring
-
-### Log Files
-All logs are stored in the `logs/` directory with daily rotation:
-
-- **`app-YYYY-MM-DD.log`**: All application logs
-- **`jago-app-YYYY-MM-DD.log`**: Jago App specific bugs
-- **`jagoan-app-YYYY-MM-DD.log`**: Jagoan App specific bugs
-- **`depot-portal-YYYY-MM-DD.log`**: Depot Portal specific bugs
-- **`service-YYYY-MM-DD.log`**: Service/Backend specific bugs
-- **`error-YYYY-MM-DD.log`**: All errors across all apps
-
-### Log Format
-```
-[2026-04-14T09:15:47.802Z] [SUCCESS] ✅ Notion ticket created {"notionUrl":"https://notion.so/...","pageId":"...","appName":"Jago App"}
+# Server Configuration
+PORT=3000
 ```
 
-### Log Retention
-- Logs older than 7 days are automatically deleted
-- Each log entry includes timestamp, level, message, and metadata
-- Error logs include full stack traces
+## Performance Comparison
 
-### Viewing Logs
-```bash
-# View today's main log
-tail -f logs/app-$(date +%Y-%m-%d).log
-
-# View Jago App logs
-tail -f logs/jago-app-$(date +%Y-%m-%d).log
-
-# View errors only
-tail -f logs/error-$(date +%Y-%m-%d).log
-
-# Search for specific bug
-grep "Bug ticket created" logs/app-*.log
-```
-
-## Advanced Features
-
-### Notion Polling
-The bot polls your Notion database every 2 minutes to detect manually created bugs:
-- Only notifies for bugs created manually (without Slack Thread URL)
-- Skips automation-created bugs to avoid duplicate notifications
-- Sends notifications to configured bug tracking channel
-- Tracks processed bugs in `.notion-tracking.json`
-
-### Bug Tracking Channel
-Configure `SLACK_BUG_TRACKING_CHANNEL` in `.env` to receive notifications for:
-- All automation-created bugs (from Slack)
-- Manually created bugs in Notion
-- Includes bug details, severity, priority, and links
-
-### Thread Context Analysis
-The bot analyzes the entire Slack thread:
-- Original bug report message
-- All replies and comments in the thread
-- Detects app name from any message in thread
-- Summarizes discussion for Notion ticket
-- Uses context for better AI diagnosis
-
-## Troubleshooting
-
-### Bot doesn't respond
-- Check that Socket Mode is enabled
-- Verify the app is installed to your workspace
-- Ensure event subscriptions are configured
-- Check console logs for errors
-
-### Notion ticket creation fails
-- Verify database properties match exactly
-- Ensure integration has access to the database
-- Check that Database ID is correct
-
-### AI diagnosis not working
-- Verify OpenAI API key is valid
-- Check you have sufficient API credits
-- Review console logs for API errors
+| Metric | Node.js | Go |
+|--------|---------|-----|
+| Binary Size | ~200MB (with node_modules) | ~15MB |
+| Memory Usage | ~150MB | ~30MB |
+| Startup Time | ~2s | ~100ms |
+| Docker Image | ~300MB | ~25MB |
 
 ## Development
 
-The bot uses:
-- **@slack/bolt** for Slack integration
-- **@notionhq/client** for Notion API
-- **openai** for AI diagnosis
-- **dotenv** for environment management
+### Install Development Tools
+
+```bash
+# Air for hot reload
+go install github.com/cosmtrek/air@latest
+
+# Run with auto-reload
+make dev
+```
+
+### Run Tests
+
+```bash
+make test
+```
+
+### Format Code
+
+```bash
+make fmt
+```
+
+## Logging
+
+Logs are stored in `logs/` directory:
+
+```bash
+# View main log
+tail -f logs/app-$(date +%Y-%m-%d).log
+
+# View app-specific logs
+tail -f logs/jago-app-$(date +%Y-%m-%d).log
+tail -f logs/jagoan-app-$(date +%Y-%m-%d).log
+
+# View errors
+tail -f logs/error-$(date +%Y-%m-%d).log
+```
+
+## 🔧 Troubleshooting
+
+### Multi-issue detection not working
+```bash
+# Check if thread has multiple distinct issues
+# Bot only shows buttons if >1 issue detected
+
+# View logs to see detection result
+tail -f logs/app-$(date +%Y-%m-%d).log | grep "Multi-issue"
+
+# If detection fails, bot falls back to single issue mode
+```
+
+### Buttons not appearing
+```bash
+# Buttons only appear when multiple issues detected
+# Check logs for "Multiple issues detected"
+
+# If only 1 issue found, bot creates ticket automatically
+# No buttons needed for single issue
+```
+
+### Buttons still clickable after click
+```bash
+# This should not happen with latest version
+# Buttons auto-disable immediately after click
+
+# If issue persists, restart bot:
+pkill bug-bot
+./bug-bot
+```
+
+### Bot doesn't start
+```bash
+# Check logs
+./bug-bot 2>&1 | tee startup.log
+
+# Verify environment variables
+env | grep SLACK
+env | grep NOTION
+env | grep OPENAI
+```
+
+### Connection issues
+```bash
+# Test Slack connection
+curl -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+  https://slack.com/api/auth.test
+
+# Test Notion connection
+curl -H "Authorization: Bearer $NOTION_API_KEY" \
+  https://api.notion.com/v1/users/me
+```
 
 ## License
 
