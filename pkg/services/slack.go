@@ -51,7 +51,23 @@ func (s *SlackService) GetThreadMessages(channel, threadTS string) ([]slack.Mess
 		return nil, fmt.Errorf("failed to get thread messages: %w", err)
 	}
 
+	// Debug: Log first and last message preview
+	if len(messages) > 0 {
+		firstMsg := truncateString(messages[0].Text, 50)
+		lastMsg := truncateString(messages[len(messages)-1].Text, 50)
+		println("DEBUG GetThreadMessages: channel=", channel, "threadTS=", threadTS, "count=", len(messages))
+		println("  First:", firstMsg)
+		println("  Last:", lastMsg)
+	}
+
 	return messages, nil
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // GetUserInfo retrieves user information
@@ -150,8 +166,9 @@ func (s *SlackService) PostMessage(channel, text string, blocks []slack.Block) e
 	return nil
 }
 
-// GetMessage retrieves a specific message
+// GetMessage retrieves a specific message (works for both channel messages and thread replies)
 func (s *SlackService) GetMessage(channel, timestamp string) (*slack.Message, error) {
+	// First try to get as channel message
 	history, err := s.client.GetConversationHistory(&slack.GetConversationHistoryParameters{
 		ChannelID: channel,
 		Latest:    timestamp,
@@ -163,11 +180,43 @@ func (s *SlackService) GetMessage(channel, timestamp string) (*slack.Message, er
 		return nil, fmt.Errorf("failed to get message: %w", err)
 	}
 
-	if len(history.Messages) == 0 {
-		return nil, fmt.Errorf("message not found")
+	if len(history.Messages) > 0 && history.Messages[0].Timestamp == timestamp {
+		return &history.Messages[0], nil
 	}
 
-	return &history.Messages[0], nil
+	// If not found, it might be a thread reply - we need to find its parent thread
+	// Try getting recent messages and search for the timestamp
+	recentHistory, err := s.client.GetConversationHistory(&slack.GetConversationHistoryParameters{
+		ChannelID: channel,
+		Limit:     100, // Get recent messages to find thread parents
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get conversation history: %w", err)
+	}
+
+	// Search through messages to find one with replies
+	for _, msg := range recentHistory.Messages {
+		if msg.ReplyCount > 0 {
+			// This message has replies, check if our timestamp is in there
+			replies, _, _, err := s.client.GetConversationReplies(&slack.GetConversationRepliesParameters{
+				ChannelID: channel,
+				Timestamp: msg.Timestamp,
+			})
+
+			if err != nil {
+				continue
+			}
+
+			for _, reply := range replies {
+				if reply.Timestamp == timestamp {
+					return &reply, nil
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("message not found")
 }
 
 // ExtractTeamID extracts team ID from event

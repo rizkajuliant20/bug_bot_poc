@@ -47,6 +47,18 @@ func (h *BugHandler) HandleBugReport(channel, ts, threadTS, user, text, teamID s
 		"messagePreview": truncateString(text, 100),
 	})
 
+	// Debug: Log if ts and threadTS are different (message is in a thread)
+	if ts != threadTS {
+		h.logger.Info("Message is a reply in thread", map[string]interface{}{
+			"replyTS":  ts,
+			"threadTS": threadTS,
+		})
+	} else {
+		h.logger.Info("Message is thread root or standalone", map[string]interface{}{
+			"ts": ts,
+		})
+	}
+
 	// Remove old status reactions to allow re-trigger
 	h.slackService.RemoveReaction(channel, ts, "x")
 	h.slackService.RemoveReaction(channel, ts, "white_check_mark")
@@ -506,7 +518,12 @@ func (h *BugHandler) sendMultiIssueSelection(channel, threadTS string, analysis 
 	h.slackService.SendThreadReply(channel, threadTS, "Multiple issues detected", blocks)
 }
 
-func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, createdTickets []string, failedIssues []int, totalIssues int) {
+type TicketInfo struct {
+	URL   string
+	Title string
+}
+
+func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, createdTickets []TicketInfo, failedIssues []int, analysis *services.MultiIssueAnalysis) {
 	h.slackService.RemoveReaction(channel, ts, "eyes")
 
 	if len(createdTickets) == 0 {
@@ -515,10 +532,11 @@ func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, created
 		return
 	}
 
-	h.slackService.AddReaction(channel, ts, "white_check_mark")
+	// Remove eyes reaction only (no checkmark needed)
+	h.slackService.RemoveReaction(channel, ts, "eyes")
 
 	var message strings.Builder
-	message.WriteString(fmt.Sprintf("✅ *Created %d/%d bug tickets in Notion*", len(createdTickets), totalIssues))
+	message.WriteString(fmt.Sprintf("✅ *Created %d/%d bug tickets in Notion*", len(createdTickets), analysis.IssueCount))
 
 	if len(failedIssues) > 0 {
 		message.WriteString(fmt.Sprintf("\n\n⚠️ Failed to create tickets for issues: %v", failedIssues))
@@ -535,17 +553,23 @@ func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, created
 		),
 	}
 
-	// Add button for each created ticket
+	// Add button for each created ticket with bug title
 	var buttons []slack.BlockElement
-	for i, url := range createdTickets {
+	for i, ticket := range createdTickets {
+		// Truncate title if too long for button
+		buttonText := ticket.Title
+		if len(buttonText) > 60 {
+			buttonText = buttonText[:57] + "..."
+		}
+
 		buttons = append(buttons, slack.NewButtonBlockElement(
 			fmt.Sprintf("view_ticket_%d", i),
-			url,
+			ticket.URL,
 			&slack.TextBlockObject{
 				Type: slack.PlainTextType,
-				Text: fmt.Sprintf("📝 View Issue %d", i+1),
+				Text: fmt.Sprintf("📝 %s", buttonText),
 			},
-		).WithURL(url).WithStyle(slack.StylePrimary))
+		).WithURL(ticket.URL).WithStyle(slack.StylePrimary))
 	}
 
 	if len(buttons) > 0 {
@@ -559,15 +583,15 @@ func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, created
 	})
 }
 
-func (h *BugHandler) SendSingleIssueSuccess(channel, threadTS, ts string, issueNumber int, notionURL string) {
+func (h *BugHandler) SendSingleIssueSuccess(channel, threadTS, ts string, bugTitle string, notionURL string) {
+	// Remove eyes reaction only (no checkmark needed)
 	h.slackService.RemoveReaction(channel, ts, "eyes")
-	h.slackService.AddReaction(channel, ts, "white_check_mark")
 
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
 			&slack.TextBlockObject{
 				Type: slack.MarkdownType,
-				Text: fmt.Sprintf("✅ *Bug ticket created for Issue %d*", issueNumber),
+				Text: fmt.Sprintf("✅ *Ticket Created:* %s", bugTitle),
 			},
 			nil,
 			nil,
@@ -587,8 +611,8 @@ func (h *BugHandler) SendSingleIssueSuccess(channel, threadTS, ts string, issueN
 
 	h.slackService.SendThreadReply(channel, threadTS, fmt.Sprintf("Ticket created: %s", notionURL), blocks)
 	h.logger.Success("Single issue ticket created and sent to Slack", map[string]interface{}{
-		"issueNumber": issueNumber,
-		"notionURL":   notionURL,
+		"bugTitle":  bugTitle,
+		"notionURL": notionURL,
 	})
 }
 

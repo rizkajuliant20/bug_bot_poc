@@ -152,19 +152,44 @@ func handleReactionAdded(event *slackevents.ReactionAddedEvent, bugHandler *hand
 	}
 
 	log.Success("Bug reaction detected - triggering bug handler", map[string]interface{}{
-		"reaction":       event.Reaction,
-		"channel":        event.Item.Channel,
-		"messagePreview": truncate(message.Text, 50),
+		"reaction":        event.Reaction,
+		"channel":         event.Item.Channel,
+		"messageTS":       event.Item.Timestamp,
+		"messageText":     truncate(message.Text, 100),
+		"messageThreadTS": message.ThreadTimestamp,
+		"messageUser":     message.User,
 	})
+
+	// Validate message timestamp matches event
+	if message.Timestamp != event.Item.Timestamp {
+		log.Error("WARNING: Message timestamp mismatch! Slack API may have returned wrong message", nil, map[string]interface{}{
+			"eventTS":   event.Item.Timestamp,
+			"messageTS": message.Timestamp,
+		})
+		// Continue anyway, but this indicates a Slack API issue
+	}
 
 	// Extract team ID (not critical for functionality)
 	teamID := ""
+
+	// Determine thread timestamp
+	// If message has ThreadTimestamp, it's a reply in a thread
+	// Otherwise, the message itself is the thread root
+	threadTS := message.ThreadTimestamp
+	if threadTS == "" {
+		threadTS = event.Item.Timestamp
+	}
+
+	log.Info("Thread context determined", map[string]interface{}{
+		"messageTS": event.Item.Timestamp,
+		"threadTS":  threadTS,
+	})
 
 	// Handle bug report
 	err = bugHandler.HandleBugReport(
 		event.Item.Channel,
 		event.Item.Timestamp,
-		message.ThreadTimestamp,
+		threadTS,
 		message.User,
 		message.Text,
 		teamID,
@@ -302,32 +327,31 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 		return
 	}
 
-	// Update message to show processing (disable buttons)
-	// Use messageTS (the message with buttons), not threadTS
-	bugHandler.UpdateMessageToProcessing(channel, messageTS, action.ActionID, issueData.Analysis)
-
-	// Handle cancel
+	// Handle cancel first (before updating message)
 	if action.ActionID == "cancel_issues" {
 		log.Info("User cancelled multi-issue creation", map[string]interface{}{
 			"user": callback.User.ID,
 		})
 
+		// Delete multi-issue selection message silently (no cancellation message needed)
+		bugHandler.GetSlackService().DeleteMessage(channel, messageTS)
+
 		// Clean up store
 		handlers.GetIssueStore().Delete(storeKey)
-
-		// Send cancellation message
-		bugHandler.SendCancellationMessage(channel, issueData.ThreadTS)
 		return
 	}
 
-	// Handle create all issues
+	// Handle create all issues (skip update, just delete)
 	if action.ActionID == "create_all_issues" {
 		log.Info("User requested to create all issues", map[string]interface{}{
 			"user":  callback.User.ID,
 			"count": issueData.Analysis.IssueCount,
 		})
 
-		var createdTickets []string
+		// Delete multi-issue selection message to avoid spam
+		bugHandler.GetSlackService().DeleteMessage(channel, messageTS)
+
+		var createdTickets []handlers.TicketInfo
 		var failedIssues []int
 
 		for i := range issueData.Analysis.Issues {
@@ -338,12 +362,15 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 				})
 				failedIssues = append(failedIssues, i+1)
 			} else {
-				createdTickets = append(createdTickets, notionURL)
+				createdTickets = append(createdTickets, handlers.TicketInfo{
+					URL:   notionURL,
+					Title: issueData.Analysis.Issues[i].Title,
+				})
 			}
 		}
 
 		// Send summary to Slack
-		bugHandler.SendMultiIssueResults(channel, issueData.ThreadTS, issueData.TS, createdTickets, failedIssues, issueData.Analysis.IssueCount)
+		bugHandler.SendMultiIssueResults(channel, issueData.ThreadTS, issueData.TS, createdTickets, failedIssues, issueData.Analysis)
 
 		// Clean up store
 		handlers.GetIssueStore().Delete(storeKey)
@@ -361,6 +388,9 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 			"issueIndex": issueIndex,
 		})
 
+		// Delete multi-issue selection message to avoid spam
+		bugHandler.GetSlackService().DeleteMessage(channel, messageTS)
+
 		notionURL, err := bugHandler.CreateIssueTicket(issueIndex, issueData)
 		if err != nil {
 			log.Error("Failed to create ticket for issue", err, map[string]interface{}{
@@ -368,7 +398,9 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 			})
 			bugHandler.SendSingleIssueError(channel, issueData.ThreadTS, issueIndex+1, err)
 		} else {
-			bugHandler.SendSingleIssueSuccess(channel, issueData.ThreadTS, issueData.TS, issueIndex+1, notionURL)
+			// Get issue title
+			issueTitle := issueData.Analysis.Issues[issueIndex].Title
+			bugHandler.SendSingleIssueSuccess(channel, issueData.ThreadTS, issueData.TS, issueTitle, notionURL)
 		}
 
 		// Clean up store
@@ -397,16 +429,8 @@ func handleConfirmationButton(callback slack.InteractionCallback, action *slack.
 			"user": callback.User.ID,
 		})
 
-		// Update message
-		bugHandler.GetSlackService().GetClient().UpdateMessage(
-			channel,
-			messageTS,
-			slack.MsgOptionText("❌ Ticket creation cancelled", false),
-			slack.MsgOptionBlocks(),
-		)
-
-		// Remove reaction
-		bugHandler.GetSlackService().AddReaction(data.Channel, data.OriginalTS, "x")
+		// Delete confirmation message silently (no reaction needed)
+		bugHandler.GetSlackService().DeleteMessage(channel, messageTS)
 
 		// Clean up
 		handlers.DeleteConfirmationData(confirmationID)
@@ -460,16 +484,29 @@ func handleConfirmationButton(callback slack.InteractionCallback, action *slack.
 
 		notionURL := bugHandler.GetNotionService().GetNotionPageURL(notionPage.ID.String())
 
-		// Update confirmation message
-		bugHandler.GetSlackService().GetClient().UpdateMessage(
-			channel,
-			messageTS,
-			slack.MsgOptionText(fmt.Sprintf("✅ Ticket created: %s", notionURL), false),
-			slack.MsgOptionBlocks(),
-		)
+		// Delete confirmation message to avoid spam
+		bugHandler.GetSlackService().DeleteMessage(channel, messageTS)
 
-		// Add checkmark reaction
-		bugHandler.GetSlackService().AddReaction(data.Channel, data.OriginalTS, "white_check_mark")
+		// Send success message with bug title and link
+		blocks := []slack.Block{
+			slack.NewSectionBlock(
+				&slack.TextBlockObject{
+					Type: slack.MarkdownType,
+					Text: fmt.Sprintf("✅ *Ticket Created:* %s", data.Title),
+				},
+				nil,
+				nil,
+			),
+			slack.NewActionBlock(
+				"",
+				slack.NewButtonBlockElement("", "", &slack.TextBlockObject{
+					Type: slack.PlainTextType,
+					Text: "📝 View in Notion",
+				}).WithURL(notionURL).WithStyle(slack.StylePrimary),
+			),
+		}
+
+		bugHandler.GetSlackService().SendThreadReply(data.Channel, data.ThreadTS, "", blocks)
 
 		// Send notification to bug tracking channel
 		if bugHandler.GetBugTrackingChannel() != "" {
