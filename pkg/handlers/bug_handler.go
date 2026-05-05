@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rizkajuliant20/bug-bot/pkg/logger"
 	"github.com/rizkajuliant20/bug-bot/pkg/services"
@@ -10,10 +11,11 @@ import (
 )
 
 type BugHandler struct {
-	slackService  *services.SlackService
-	notionService *services.NotionService
-	aiService     *services.OpenAIService
-	logger        *logger.Logger
+	slackService       *services.SlackService
+	notionService      *services.NotionService
+	aiService          *services.OpenAIService
+	logger             *logger.Logger
+	bugTrackingChannel string
 }
 
 func NewBugHandler(
@@ -21,12 +23,14 @@ func NewBugHandler(
 	notionService *services.NotionService,
 	aiService *services.OpenAIService,
 	log *logger.Logger,
+	bugTrackingChannel string,
 ) *BugHandler {
 	return &BugHandler{
-		slackService:  slackService,
-		notionService: notionService,
-		aiService:     aiService,
-		logger:        log,
+		slackService:       slackService,
+		notionService:      notionService,
+		aiService:          aiService,
+		logger:             log,
+		bugTrackingChannel: bugTrackingChannel,
 	}
 }
 
@@ -46,7 +50,7 @@ func (h *BugHandler) HandleBugReport(channel, ts, threadTS, user, text, teamID s
 	// Remove old status reactions to allow re-trigger
 	h.slackService.RemoveReaction(channel, ts, "x")
 	h.slackService.RemoveReaction(channel, ts, "white_check_mark")
-	
+
 	// Add eyes reaction
 	if err := h.slackService.AddReaction(channel, ts, "eyes"); err != nil {
 		h.logger.Error("Failed to add eyes reaction", err, nil)
@@ -100,12 +104,12 @@ func (h *BugHandler) HandleBugReport(channel, ts, threadTS, user, text, teamID s
 		h.logger.Info("Multiple issues detected", map[string]interface{}{
 			"count": multiIssue.IssueCount,
 		})
-		
+
 		// Delete analyzing message
 		if analyzingMsgTS != "" {
 			h.slackService.DeleteMessage(channel, analyzingMsgTS)
 		}
-		
+
 		// Store issue data for button interactions
 		storeKey := fmt.Sprintf("%s_%s", channel, threadTS)
 		GetIssueStore().Set(storeKey, &IssueData{
@@ -118,7 +122,7 @@ func (h *BugHandler) HandleBugReport(channel, ts, threadTS, user, text, teamID s
 			ThreadTS:       threadTS,
 			TS:             ts,
 		})
-		
+
 		// Send interactive message with buttons
 		h.sendMultiIssueSelection(channel, threadTS, multiIssue, bugDescription, threadMessages, reporterName, teamID)
 		h.logger.Success("Multi-issue selection sent to user", nil)
@@ -131,12 +135,12 @@ func (h *BugHandler) HandleBugReport(channel, ts, threadTS, user, text, teamID s
 	})
 
 	diagnosis, err := h.aiService.DiagnoseBug(bugDescription, threadMessages)
-	
+
 	// Delete analyzing message after AI completes
 	if analyzingMsgTS != "" {
 		h.slackService.DeleteMessage(channel, analyzingMsgTS)
 	}
-	
+
 	if err != nil {
 		h.logger.Error("AI diagnosis failed", err, nil)
 		h.slackService.AddReaction(channel, ts, "x")
@@ -184,45 +188,28 @@ func (h *BugHandler) HandleBugReport(channel, ts, threadTS, user, text, teamID s
 		"appName": summaryResult.AppName,
 	})
 
-	// Create Notion ticket
-	h.logger.Flow("BUG_HANDLER", "Creating Notion ticket", map[string]interface{}{
-		"appName": summaryResult.AppName,
-	})
-
-	notionPage, err := h.notionService.CreateBugTicket(&services.BugTicketData{
-		Title:          summaryResult.Title,
-		Description:    bugDescription,
+	// Store analysis data for confirmation
+	confirmationID := fmt.Sprintf("confirm_%s_%s", channel, ts)
+	StoreConfirmationData(confirmationID, &ConfirmationData{
+		BugDescription: bugDescription,
 		Diagnosis:      diagnosis,
+		Title:          summaryResult.Title,
+		AppName:        summaryResult.AppName,
 		Reporter:       reporterName,
 		SlackThreadURL: slackThreadURL,
 		ThreadMessages: threadMessages,
 		ThreadSummary:  threadSummary,
+		TeamID:         teamID,
+		Channel:        channel,
+		ThreadTS:       threadTS,
+		OriginalTS:     ts,
 	})
 
-	if err != nil {
-		h.logger.Error("Notion ticket creation failed", err, map[string]interface{}{
-			"appName": summaryResult.AppName,
-		})
-		h.slackService.AddReaction(channel, ts, "x")
-		h.slackService.SendThreadReply(channel, threadTS, fmt.Sprintf("❌ Error creating bug ticket: %v", err), nil)
-		return err
-	}
+	// Send confirmation message with preview
+	h.sendConfirmationMessage(channel, threadTS, confirmationID, summaryResult.Title, diagnosis)
 
-	notionURL := h.notionService.GetNotionPageURL(notionPage.ID.String())
-	h.logger.Success("Notion ticket created", map[string]interface{}{
-		"notionUrl": notionURL,
-		"pageId":    notionPage.ID,
-		"appName":   summaryResult.AppName,
-	})
-
-	// Add checkmark (eyes will be removed by defer)
-	h.slackService.AddReaction(channel, ts, "white_check_mark")
-
-	// Send success message to thread
-	blocks := h.buildSuccessBlocks(summaryResult.Title, diagnosis, notionURL)
-	h.slackService.SendThreadReply(channel, threadTS, fmt.Sprintf("Bug ticket created: %s", notionURL), blocks)
-	h.logger.Success("Bug ticket response sent to thread", map[string]interface{}{
-		"appName": summaryResult.AppName,
+	h.logger.Success("Confirmation sent - waiting for user action", map[string]interface{}{
+		"confirmationID": confirmationID,
 	})
 
 	return nil
@@ -242,14 +229,12 @@ func (h *BugHandler) SendBugNotification(channel, title, reporter, notionURL, sl
 	blocks := []slack.Block{
 		slack.NewHeaderBlock(&slack.TextBlockObject{
 			Type: slack.PlainTextType,
-			Text: "🐛 New Bug Ticket Created",
+			Text: title,
 		}),
 		slack.NewSectionBlock(
 			nil,
 			[]*slack.TextBlockObject{
-				{Type: slack.MarkdownType, Text: fmt.Sprintf("*Title:*\n%s", title)},
 				{Type: slack.MarkdownType, Text: fmt.Sprintf("*Reporter:*\n%s", reporter)},
-				{Type: slack.MarkdownType, Text: fmt.Sprintf("*Severity:*\n%s", strings.ToUpper(diagnosis.Severity))},
 				{Type: slack.MarkdownType, Text: fmt.Sprintf("*Priority:*\n%s", diagnosis.Priority)},
 			},
 			nil,
@@ -357,27 +342,27 @@ func truncateString(s string, maxLen int) string {
 
 func (h *BugHandler) CreateIssueTicket(issueIndex int, issueData *IssueData) (string, error) {
 	issue := issueData.Analysis.Issues[issueIndex]
-	
+
 	h.logger.Flow("BUG_HANDLER", "Creating ticket for specific issue", map[string]interface{}{
 		"issueIndex": issueIndex,
 		"title":      issue.Title,
 	})
 
-	// Create a simple diagnosis from the detected issue
+	// Create diagnosis from the detected issue (now includes all fields)
 	diagnosis := &services.BugDiagnosis{
-		Severity:       issue.Severity,
-		Category:       issue.Category,
-		Priority:       getPriorityFromSeverity(issue.Severity),
-		Platform:       []string{},
-		Team:           "Eng",
-		Precondition:   "",
-		StepsToReproduce: "",
-		ActualResult:   issue.Description,
-		ExpectedResult: "",
-		RootCause:      issue.Description,
-		SuggestedFix:   "To be investigated",
+		Severity:           issue.Severity,
+		Category:           issue.Category,
+		Priority:           issue.Priority,
+		Platform:           issue.Platform,
+		Team:               issue.Team,
+		Precondition:       "",
+		StepsToReproduce:   "",
+		ActualResult:       issue.Description,
+		ExpectedResult:     "",
+		RootCause:          issue.Description,
+		SuggestedFix:       "To be investigated",
 		AffectedComponents: []string{},
-		Tags:           []string{"bug"},
+		Tags:               issue.Tags, // Use tags from AI analysis
 	}
 
 	// Generate title with app detection
@@ -405,6 +390,14 @@ func (h *BugHandler) CreateIssueTicket(issueIndex int, issueData *IssueData) (st
 		SlackThreadURL: slackThreadURL,
 		ThreadMessages: issueData.ThreadMessages,
 		ThreadSummary:  threadSummary,
+		// Jago-specific fields
+		CreatedBy:    issueData.Reporter,
+		Assignee:     "",                 // Will be set manually in Notion
+		Environment:  "Production",       // Default to Production
+		Reproducible: true,               // Default to true
+		Impact:       diagnosis.Severity, // Map from severity
+		Urgency:      diagnosis.Severity, // Map from severity
+		DueDate:      time.Time{},        // Empty for now
 	})
 
 	if err != nil {
@@ -416,10 +409,15 @@ func (h *BugHandler) CreateIssueTicket(issueIndex int, issueData *IssueData) (st
 
 	notionURL := h.notionService.GetNotionPageURL(notionPage.ID.String())
 	h.logger.Success("Notion ticket created for issue", map[string]interface{}{
-		"notionUrl":   notionURL,
-		"pageId":      notionPage.ID,
-		"issueIndex":  issueIndex,
+		"notionUrl":  notionURL,
+		"pageId":     notionPage.ID,
+		"issueIndex": issueIndex,
 	})
+
+	// Send notification to bug tracking channel if configured
+	if h.bugTrackingChannel != "" {
+		h.SendBugNotification(h.bugTrackingChannel, summaryResult.Title, issueData.Reporter, notionURL, slackThreadURL, diagnosis, summaryResult.AppName)
+	}
 
 	return notionURL, nil
 }
@@ -441,7 +439,7 @@ func (h *BugHandler) sendMultiIssueSelection(channel, threadTS string, analysis 
 	// Build issue list text
 	var issueList strings.Builder
 	issueList.WriteString(fmt.Sprintf("🔍 *Detected %d separate issues in this thread:*\n\n", analysis.IssueCount))
-	
+
 	for i, issue := range analysis.Issues {
 		issueList.WriteString(fmt.Sprintf("*Issue %d:* %s\n", i+1, issue.Title))
 		issueList.WriteString(fmt.Sprintf("└ %s\n", issue.Description))
@@ -510,26 +508,22 @@ func (h *BugHandler) sendMultiIssueSelection(channel, threadTS string, analysis 
 
 func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, createdTickets []string, failedIssues []int, totalIssues int) {
 	h.slackService.RemoveReaction(channel, ts, "eyes")
-	
+
 	if len(createdTickets) == 0 {
 		h.slackService.AddReaction(channel, ts, "x")
 		h.slackService.SendThreadReply(channel, threadTS, "❌ Failed to create any tickets", nil)
 		return
 	}
-	
+
 	h.slackService.AddReaction(channel, ts, "white_check_mark")
-	
+
 	var message strings.Builder
-	message.WriteString(fmt.Sprintf("✅ *Created %d/%d bug tickets in Notion*\n\n", len(createdTickets), totalIssues))
-	
-	for i, ticketURL := range createdTickets {
-		message.WriteString(fmt.Sprintf("• <%s|Issue %d Ticket>\n", ticketURL, i+1))
-	}
-	
+	message.WriteString(fmt.Sprintf("✅ *Created %d/%d bug tickets in Notion*", len(createdTickets), totalIssues))
+
 	if len(failedIssues) > 0 {
-		message.WriteString(fmt.Sprintf("\n⚠️ Failed to create tickets for issues: %v", failedIssues))
+		message.WriteString(fmt.Sprintf("\n\n⚠️ Failed to create tickets for issues: %v", failedIssues))
 	}
-	
+
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
 			&slack.TextBlockObject{
@@ -540,7 +534,7 @@ func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, created
 			nil,
 		),
 	}
-	
+
 	// Add button for each created ticket
 	var buttons []slack.BlockElement
 	for i, url := range createdTickets {
@@ -553,11 +547,11 @@ func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, created
 			},
 		).WithURL(url).WithStyle(slack.StylePrimary))
 	}
-	
+
 	if len(buttons) > 0 {
 		blocks = append(blocks, slack.NewActionBlock("view_tickets", buttons...))
 	}
-	
+
 	h.slackService.SendThreadReply(channel, threadTS, "Bug tickets created", blocks)
 	h.logger.Success("Multi-issue results sent to Slack", map[string]interface{}{
 		"created": len(createdTickets),
@@ -568,7 +562,7 @@ func (h *BugHandler) SendMultiIssueResults(channel, threadTS, ts string, created
 func (h *BugHandler) SendSingleIssueSuccess(channel, threadTS, ts string, issueNumber int, notionURL string) {
 	h.slackService.RemoveReaction(channel, ts, "eyes")
 	h.slackService.AddReaction(channel, ts, "white_check_mark")
-	
+
 	blocks := []slack.Block{
 		slack.NewSectionBlock(
 			&slack.TextBlockObject{
@@ -590,7 +584,7 @@ func (h *BugHandler) SendSingleIssueSuccess(channel, threadTS, ts string, issueN
 			).WithURL(notionURL).WithStyle(slack.StylePrimary),
 		),
 	}
-	
+
 	h.slackService.SendThreadReply(channel, threadTS, fmt.Sprintf("Ticket created: %s", notionURL), blocks)
 	h.logger.Success("Single issue ticket created and sent to Slack", map[string]interface{}{
 		"issueNumber": issueNumber,
@@ -614,7 +608,7 @@ func (h *BugHandler) UpdateMessageToProcessing(channel, messageTS, actionID stri
 	// Build issue list text
 	var issueList strings.Builder
 	issueList.WriteString(fmt.Sprintf("🔍 *Detected %d separate issues in this thread:*\n\n", analysis.IssueCount))
-	
+
 	for i, issue := range analysis.Issues {
 		issueList.WriteString(fmt.Sprintf("*Issue %d:* %s\n", i+1, issue.Title))
 		issueList.WriteString(fmt.Sprintf("└ %s\n", issue.Description))
@@ -652,4 +646,134 @@ func (h *BugHandler) UpdateMessageToProcessing(channel, messageTS, actionID stri
 	if err != nil {
 		h.logger.Error("Failed to update message", err, nil)
 	}
+}
+
+// Getter methods
+func (h *BugHandler) GetSlackService() *services.SlackService {
+	return h.slackService
+}
+
+func (h *BugHandler) GetNotionService() *services.NotionService {
+	return h.notionService
+}
+
+func (h *BugHandler) GetBugTrackingChannel() string {
+	return h.bugTrackingChannel
+}
+
+func (h *BugHandler) sendConfirmationMessage(channel, threadTS, confirmationID, title string, diagnosis *services.BugDiagnosis) {
+	platformStr := "N/A"
+	if len(diagnosis.Platform) > 0 {
+		platformStr = strings.Join(diagnosis.Platform, ", ")
+	}
+
+	tagsStr := "N/A"
+	if len(diagnosis.Tags) > 0 {
+		tagsStr = strings.Join(diagnosis.Tags, ", ")
+	}
+
+	blocks := []slack.Block{
+		slack.NewHeaderBlock(&slack.TextBlockObject{
+			Type: slack.PlainTextType,
+			Text: "🔍 Bug Analysis Complete",
+		}),
+		slack.NewSectionBlock(
+			&slack.TextBlockObject{
+				Type: slack.MarkdownType,
+				Text: fmt.Sprintf("*Title:*\n%s", title),
+			},
+			nil,
+			nil,
+		),
+		slack.NewDividerBlock(),
+		slack.NewSectionBlock(
+			nil,
+			[]*slack.TextBlockObject{
+				{Type: slack.MarkdownType, Text: fmt.Sprintf("*Priority:*\n%s", diagnosis.Priority)},
+				{Type: slack.MarkdownType, Text: fmt.Sprintf("*Team:*\n%s", diagnosis.Team)},
+			},
+			nil,
+		),
+		slack.NewSectionBlock(
+			nil,
+			[]*slack.TextBlockObject{
+				{Type: slack.MarkdownType, Text: fmt.Sprintf("*Platform:*\n%s", platformStr)},
+				{Type: slack.MarkdownType, Text: fmt.Sprintf("*Category:*\n%s", diagnosis.Category)},
+			},
+			nil,
+		),
+		slack.NewSectionBlock(
+			&slack.TextBlockObject{
+				Type: slack.MarkdownType,
+				Text: fmt.Sprintf("*Tags:* %s", tagsStr),
+			},
+			nil,
+			nil,
+		),
+	}
+
+	// Add Root Cause if available
+	if diagnosis.RootCause != "" {
+		blocks = append(blocks, slack.NewDividerBlock())
+		blocks = append(blocks, slack.NewSectionBlock(
+			&slack.TextBlockObject{
+				Type: slack.MarkdownType,
+				Text: fmt.Sprintf("*🔍 Root Cause:*\n%s", truncateString(diagnosis.RootCause, 200)),
+			},
+			nil,
+			nil,
+		))
+	}
+
+	// Add Suggested Fix if available
+	if diagnosis.SuggestedFix != "" {
+		blocks = append(blocks, slack.NewSectionBlock(
+			&slack.TextBlockObject{
+				Type: slack.MarkdownType,
+				Text: fmt.Sprintf("*💡 Suggested Fix:*\n%s", truncateString(diagnosis.SuggestedFix, 200)),
+			},
+			nil,
+			nil,
+		))
+	}
+
+	// Add Steps to Reproduce if available
+	if diagnosis.StepsToReproduce != "" {
+		blocks = append(blocks, slack.NewSectionBlock(
+			&slack.TextBlockObject{
+				Type: slack.MarkdownType,
+				Text: fmt.Sprintf("*📝 Steps to Reproduce:*\n%s", truncateString(diagnosis.StepsToReproduce, 150)),
+			},
+			nil,
+			nil,
+		))
+	}
+
+	// Final confirmation prompt
+	blocks = append(blocks,
+		slack.NewDividerBlock(),
+		slack.NewSectionBlock(
+			&slack.TextBlockObject{
+				Type: slack.MarkdownType,
+				Text: "✨ *Please review the analysis above.*\nCreate the ticket or cancel?",
+			},
+			nil,
+			nil,
+		),
+		slack.NewActionBlock(
+			"",
+			slack.NewButtonBlockElement(
+				fmt.Sprintf("create_ticket_%s", confirmationID),
+				confirmationID,
+				&slack.TextBlockObject{Type: slack.PlainTextType, Text: "✅ Create Ticket"},
+			).WithStyle(slack.StylePrimary),
+			slack.NewButtonBlockElement(
+				fmt.Sprintf("cancel_ticket_%s", confirmationID),
+				confirmationID,
+				&slack.TextBlockObject{Type: slack.PlainTextType, Text: "❌ Cancel"},
+			).WithStyle(slack.StyleDanger),
+		),
+	)
+
+	h.slackService.SendThreadReply(channel, threadTS, "Bug analysis complete! Please confirm:", blocks)
 }

@@ -32,7 +32,7 @@ func main() {
 	aiService := services.NewOpenAIService(cfg.OpenAI.APIKey, logger)
 
 	// Initialize bug handler
-	bugHandler := handlers.NewBugHandler(slackService, notionService, aiService, logger)
+	bugHandler := handlers.NewBugHandler(slackService, notionService, aiService, logger, cfg.Slack.BugTrackingChannel)
 
 	// Get socket mode client
 	client := slackService.GetSocket()
@@ -86,13 +86,23 @@ func main() {
 	logger.Info("Listening for bug reports...", nil)
 
 	// Start Notion polling if bug tracking channel is configured
+	// DISABLED for Jago: Too many existing bugs in database would cause spam
+	// Only Slack → Notion flow is active (via emoji reactions)
 	if cfg.Slack.BugTrackingChannel != "" {
 		logger.Info("Bug tracking channel configured", map[string]interface{}{
 			"channel": cfg.Slack.BugTrackingChannel,
 		})
-		notionService.StartPolling(2*time.Minute, cfg.Slack.BugTrackingChannel, slackService)
+		logger.Info("Notion polling DISABLED - only Slack reactions will create tickets", nil)
+		// notionService.StartPolling(2*time.Minute, cfg.Slack.BugTrackingChannel, slackService)
+
+		// Start weekly bug report scheduler
+		weeklyReportService := services.NewWeeklyReportService(notionService, slackService, logger, cfg.Slack.BugTrackingChannel)
+		weeklyReportService.StartWeeklyReports()
+		logger.Success("Weekly bug report scheduler started", map[string]interface{}{
+			"schedule": "Every Friday at 5 PM",
+		})
 	} else {
-		logger.Info("Bug tracking channel not configured - polling disabled", nil)
+		logger.Info("Bug tracking channel not configured - polling and weekly reports disabled", nil)
 	}
 
 	// Run socket mode
@@ -261,9 +271,9 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 
 	action := callback.ActionCallback.BlockActions[0]
 	channel := callback.Channel.ID
-	messageTS := callback.Container.MessageTs // The message with buttons
+	messageTS := callback.Container.MessageTs    // The message with buttons
 	threadTS := callback.Message.ThreadTimestamp // The thread timestamp
-	
+
 	log.Flow("SLACK_EVENT", "Button interaction received", map[string]interface{}{
 		"actionID":  action.ActionID,
 		"user":      callback.User.ID,
@@ -272,12 +282,18 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 		"threadTS":  threadTS,
 	})
 
-	// Get stored issue data
+	// Handle confirmation buttons (create_ticket / cancel_ticket)
+	if strings.HasPrefix(action.ActionID, "create_ticket_") || strings.HasPrefix(action.ActionID, "cancel_ticket_") {
+		handleConfirmationButton(callback, action, bugHandler, log)
+		return
+	}
+
+	// Get stored issue data (for multi-issue flow)
 	storeKey := fmt.Sprintf("%s_%s", channel, threadTS)
 	if threadTS == "" {
 		storeKey = fmt.Sprintf("%s_%s", channel, messageTS)
 	}
-	
+
 	issueData, ok := handlers.GetIssueStore().Get(storeKey)
 	if !ok {
 		log.Error("Issue data not found in store", nil, map[string]interface{}{
@@ -295,10 +311,10 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 		log.Info("User cancelled multi-issue creation", map[string]interface{}{
 			"user": callback.User.ID,
 		})
-		
+
 		// Clean up store
 		handlers.GetIssueStore().Delete(storeKey)
-		
+
 		// Send cancellation message
 		bugHandler.SendCancellationMessage(channel, issueData.ThreadTS)
 		return
@@ -310,10 +326,10 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 			"user":  callback.User.ID,
 			"count": issueData.Analysis.IssueCount,
 		})
-		
+
 		var createdTickets []string
 		var failedIssues []int
-		
+
 		for i := range issueData.Analysis.Issues {
 			notionURL, err := bugHandler.CreateIssueTicket(i, issueData)
 			if err != nil {
@@ -325,10 +341,10 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 				createdTickets = append(createdTickets, notionURL)
 			}
 		}
-		
+
 		// Send summary to Slack
 		bugHandler.SendMultiIssueResults(channel, issueData.ThreadTS, issueData.TS, createdTickets, failedIssues, issueData.Analysis.IssueCount)
-		
+
 		// Clean up store
 		handlers.GetIssueStore().Delete(storeKey)
 		return
@@ -339,12 +355,12 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 		issueIndexStr := strings.TrimPrefix(action.ActionID, "create_issue_")
 		var issueIndex int
 		fmt.Sscanf(issueIndexStr, "%d", &issueIndex)
-		
+
 		log.Info("User requested to create specific issue", map[string]interface{}{
 			"user":       callback.User.ID,
 			"issueIndex": issueIndex,
 		})
-		
+
 		notionURL, err := bugHandler.CreateIssueTicket(issueIndex, issueData)
 		if err != nil {
 			log.Error("Failed to create ticket for issue", err, map[string]interface{}{
@@ -354,9 +370,121 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 		} else {
 			bugHandler.SendSingleIssueSuccess(channel, issueData.ThreadTS, issueData.TS, issueIndex+1, notionURL)
 		}
-		
+
 		// Clean up store
 		handlers.GetIssueStore().Delete(storeKey)
 		return
+	}
+}
+
+func handleConfirmationButton(callback slack.InteractionCallback, action *slack.BlockAction, bugHandler *handlers.BugHandler, log *logger.Logger) {
+	confirmationID := action.Value
+	channel := callback.Channel.ID
+	messageTS := callback.Container.MessageTs
+
+	// Get confirmation data
+	data, ok := handlers.GetConfirmationData(confirmationID)
+	if !ok {
+		log.Error("Confirmation data not found", nil, map[string]interface{}{
+			"confirmationID": confirmationID,
+		})
+		return
+	}
+
+	// Handle cancel
+	if strings.HasPrefix(action.ActionID, "cancel_ticket_") {
+		log.Info("User cancelled ticket creation", map[string]interface{}{
+			"user": callback.User.ID,
+		})
+
+		// Update message
+		bugHandler.GetSlackService().GetClient().UpdateMessage(
+			channel,
+			messageTS,
+			slack.MsgOptionText("❌ Ticket creation cancelled", false),
+			slack.MsgOptionBlocks(),
+		)
+
+		// Remove reaction
+		bugHandler.GetSlackService().AddReaction(data.Channel, data.OriginalTS, "x")
+
+		// Clean up
+		handlers.DeleteConfirmationData(confirmationID)
+		return
+	}
+
+	// Handle create ticket
+	if strings.HasPrefix(action.ActionID, "create_ticket_") {
+		log.Info("User confirmed ticket creation", map[string]interface{}{
+			"user": callback.User.ID,
+		})
+
+		// Update message to show processing
+		bugHandler.GetSlackService().GetClient().UpdateMessage(
+			channel,
+			messageTS,
+			slack.MsgOptionText("⏳ Creating ticket...", false),
+			slack.MsgOptionBlocks(),
+		)
+
+		// Create Notion ticket
+		notionPage, err := bugHandler.GetNotionService().CreateBugTicket(&services.BugTicketData{
+			Title:          data.Title,
+			Description:    data.BugDescription,
+			Diagnosis:      data.Diagnosis,
+			Reporter:       data.Reporter,
+			SlackThreadURL: data.SlackThreadURL,
+			ThreadMessages: data.ThreadMessages,
+			ThreadSummary:  data.ThreadSummary,
+			CreatedBy:      data.Reporter,
+			Assignee:       "",
+			Environment:    "Production",
+			Reproducible:   true,
+			Impact:         data.Diagnosis.Severity,
+			Urgency:        data.Diagnosis.Severity,
+			DueDate:        time.Time{},
+		})
+
+		if err != nil {
+			log.Error("Failed to create Notion ticket", err, nil)
+			bugHandler.GetSlackService().GetClient().UpdateMessage(
+				channel,
+				messageTS,
+				slack.MsgOptionText(fmt.Sprintf("❌ Error creating ticket: %v", err), false),
+				slack.MsgOptionBlocks(),
+			)
+			bugHandler.GetSlackService().AddReaction(data.Channel, data.OriginalTS, "x")
+			handlers.DeleteConfirmationData(confirmationID)
+			return
+		}
+
+		notionURL := bugHandler.GetNotionService().GetNotionPageURL(notionPage.ID.String())
+
+		// Update confirmation message
+		bugHandler.GetSlackService().GetClient().UpdateMessage(
+			channel,
+			messageTS,
+			slack.MsgOptionText(fmt.Sprintf("✅ Ticket created: %s", notionURL), false),
+			slack.MsgOptionBlocks(),
+		)
+
+		// Add checkmark reaction
+		bugHandler.GetSlackService().AddReaction(data.Channel, data.OriginalTS, "white_check_mark")
+
+		// Send notification to bug tracking channel
+		if bugHandler.GetBugTrackingChannel() != "" {
+			bugHandler.SendBugNotification(
+				bugHandler.GetBugTrackingChannel(),
+				data.Title,
+				data.Reporter,
+				notionURL,
+				data.SlackThreadURL,
+				data.Diagnosis,
+				data.AppName,
+			)
+		}
+
+		// Clean up
+		handlers.DeleteConfirmationData(confirmationID)
 	}
 }
