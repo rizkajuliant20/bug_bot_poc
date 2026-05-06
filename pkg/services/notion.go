@@ -16,7 +16,16 @@ import (
 type NotionService struct {
 	client     *notionapi.Client
 	databaseID notionapi.DatabaseID
+	apiToken   string
 	logger     *logger.Logger
+}
+
+type MediaFile struct {
+	URL      string
+	Name     string
+	MimeType string
+	IsImage  bool
+	IsVideo  bool
 }
 
 type BugTicketData struct {
@@ -27,6 +36,7 @@ type BugTicketData struct {
 	SlackThreadURL string
 	ThreadMessages []slack.Message
 	ThreadSummary  string
+	MediaFiles     []MediaFile // Screenshots, images, videos from Slack
 	// Jago-specific fields
 	CreatedBy    string
 	Assignee     string
@@ -42,6 +52,7 @@ func NewNotionService(apiKey, databaseID string, log *logger.Logger) *NotionServ
 	return &NotionService{
 		client:     client,
 		databaseID: notionapi.DatabaseID(databaseID),
+		apiToken:   apiKey,
 		logger:     log,
 	}
 }
@@ -59,7 +70,7 @@ func getAssigneeByApp(tags []string) string {
 	return "" // No auto-assignment for other apps
 }
 
-func (s *NotionService) CreateBugTicket(data *BugTicketData) (*notionapi.Page, error) {
+func (s *NotionService) CreateBugTicket(data *BugTicketData, slackService *SlackService) (*notionapi.Page, error) {
 	s.logger.Flow("NOTION_SERVICE", "Creating bug ticket", map[string]interface{}{
 		"title": data.Title,
 	})
@@ -163,11 +174,53 @@ func (s *NotionService) CreateBugTicket(data *BugTicketData) (*notionapi.Page, e
 		return nil, fmt.Errorf("failed to create notion page: %w", err)
 	}
 
-	s.logger.Success("Notion ticket created", map[string]interface{}{
+	s.logger.Success("Bug ticket created successfully", map[string]interface{}{
 		"pageId": page.ID,
 	})
 
+	// Note: Media files are shown as text references in the page content
+	// Direct upload is blocked by Cloudflare protection on Notion's upload endpoint
+	if len(data.MediaFiles) > 0 {
+		s.logger.Info("Media files listed in ticket (Cloudflare blocks direct upload)", map[string]interface{}{
+			"count": len(data.MediaFiles),
+		})
+	}
+
 	return page, nil
+}
+
+// Helper function to convert text to bullet points
+func textToBulletPoints(text string) []notionapi.Block {
+	var blocks []notionapi.Block
+	lines := strings.Split(text, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Remove existing bullet/dash if present
+		line = strings.TrimPrefix(line, "- ")
+		line = strings.TrimPrefix(line, "• ")
+
+		blocks = append(blocks, notionapi.BulletedListItemBlock{
+			BasicBlock: notionapi.BasicBlock{
+				Object: notionapi.ObjectTypeBlock,
+				Type:   notionapi.BlockTypeBulletedListItem,
+			},
+			BulletedListItem: notionapi.ListItem{
+				RichText: []notionapi.RichText{
+					{
+						Type: notionapi.ObjectTypeText,
+						Text: &notionapi.Text{Content: line},
+					},
+				},
+			},
+		})
+	}
+
+	return blocks
 }
 
 // Helper function to parse numbered lists and create proper Notion blocks
@@ -276,10 +329,8 @@ func (s *NotionService) buildPageContent(data *BugTicketData) []notionapi.Block 
 				BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeHeading3},
 				Heading3:   notionapi.Heading{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: "Precondition"}}}},
 			})
-			blocks = append(blocks, notionapi.ParagraphBlock{
-				BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeParagraph},
-				Paragraph:  notionapi.Paragraph{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: data.Diagnosis.Precondition}}}},
-			})
+			bulletBlocks := textToBulletPoints(data.Diagnosis.Precondition)
+			blocks = append(blocks, bulletBlocks...)
 		}
 
 		// Steps to Reproduce
@@ -299,10 +350,8 @@ func (s *NotionService) buildPageContent(data *BugTicketData) []notionapi.Block 
 				BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeHeading3},
 				Heading3:   notionapi.Heading{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: "Actual Result"}}}},
 			})
-			blocks = append(blocks, notionapi.ParagraphBlock{
-				BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeParagraph},
-				Paragraph:  notionapi.Paragraph{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: data.Diagnosis.ActualResult}}}},
-			})
+			bulletBlocks := textToBulletPoints(data.Diagnosis.ActualResult)
+			blocks = append(blocks, bulletBlocks...)
 		}
 
 		// Expected Result
@@ -311,10 +360,8 @@ func (s *NotionService) buildPageContent(data *BugTicketData) []notionapi.Block 
 				BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeHeading3},
 				Heading3:   notionapi.Heading{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: "Expected Result"}}}},
 			})
-			blocks = append(blocks, notionapi.ParagraphBlock{
-				BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeParagraph},
-				Paragraph:  notionapi.Paragraph{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: data.Diagnosis.ExpectedResult}}}},
-			})
+			bulletBlocks := textToBulletPoints(data.Diagnosis.ExpectedResult)
+			blocks = append(blocks, bulletBlocks...)
 		}
 
 		// QA Diagnosis
@@ -323,41 +370,61 @@ func (s *NotionService) buildPageContent(data *BugTicketData) []notionapi.Block 
 			Heading2:   notionapi.Heading{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: "🔍 QA Diagnosis"}}}},
 		})
 
-		// Root Cause with proper bold formatting
-		blocks = append(blocks, notionapi.ParagraphBlock{
-			BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeParagraph},
-			Paragraph: notionapi.Paragraph{
-				RichText: []notionapi.RichText{
-					{
-						Type:        notionapi.ObjectTypeText,
-						Text:        &notionapi.Text{Content: "Root Cause: "},
-						Annotations: &notionapi.Annotations{Bold: true},
-					},
-					{
-						Type: notionapi.ObjectTypeText,
-						Text: &notionapi.Text{Content: data.Diagnosis.RootCause},
-					},
-				},
-			},
+		// Root Cause as bullet points
+		blocks = append(blocks, notionapi.Heading3Block{
+			BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeHeading3},
+			Heading3:   notionapi.Heading{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: "Root Cause"}}}},
+		})
+		bulletBlocks := textToBulletPoints(data.Diagnosis.RootCause)
+		blocks = append(blocks, bulletBlocks...)
+
+		// Suggested Fix as bullet points
+		blocks = append(blocks, notionapi.Heading3Block{
+			BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeHeading3},
+			Heading3:   notionapi.Heading{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: "Suggested Fix"}}}},
+		})
+		bulletBlocks = textToBulletPoints(data.Diagnosis.SuggestedFix)
+		blocks = append(blocks, bulletBlocks...)
+	}
+
+	// Media Files (as direct clickable links)
+	if len(data.MediaFiles) > 0 {
+		blocks = append(blocks, notionapi.Heading2Block{
+			BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeHeading2},
+			Heading2:   notionapi.Heading{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: "📷 Screenshots & Media"}}}},
 		})
 
-		// Suggested Fix with proper bold formatting
-		blocks = append(blocks, notionapi.ParagraphBlock{
-			BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeParagraph},
-			Paragraph: notionapi.Paragraph{
-				RichText: []notionapi.RichText{
-					{
-						Type:        notionapi.ObjectTypeText,
-						Text:        &notionapi.Text{Content: "Suggested Fix: "},
-						Annotations: &notionapi.Annotations{Bold: true},
-					},
-					{
-						Type: notionapi.ObjectTypeText,
-						Text: &notionapi.Text{Content: data.Diagnosis.SuggestedFix},
+		// Add clickable link for each media file
+		for i, media := range data.MediaFiles {
+			mediaIcon := "📎"
+			mediaLabel := "File"
+			if media.IsImage {
+				mediaIcon = "🖼️"
+				mediaLabel = "Image"
+			} else if media.IsVideo {
+				mediaIcon = "🎥"
+				mediaLabel = "Video"
+			}
+
+			blocks = append(blocks, notionapi.ParagraphBlock{
+				BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeParagraph},
+				Paragraph: notionapi.Paragraph{
+					RichText: []notionapi.RichText{
+						{
+							Type: notionapi.ObjectTypeText,
+							Text: &notionapi.Text{Content: fmt.Sprintf("%s %d. ", mediaIcon, i+1)},
+						},
+						{
+							Type: notionapi.ObjectTypeText,
+							Text: &notionapi.Text{
+								Content: mediaLabel,
+								Link:    &notionapi.Link{Url: media.URL},
+							},
+						},
 					},
 				},
-			},
-		})
+			})
+		}
 	}
 
 	// Thread Summary
@@ -366,10 +433,8 @@ func (s *NotionService) buildPageContent(data *BugTicketData) []notionapi.Block 
 			BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeHeading2},
 			Heading2:   notionapi.Heading{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: "💬 Thread Summary"}}}},
 		})
-		blocks = append(blocks, notionapi.ParagraphBlock{
-			BasicBlock: notionapi.BasicBlock{Object: notionapi.ObjectTypeBlock, Type: notionapi.BlockTypeParagraph},
-			Paragraph:  notionapi.Paragraph{RichText: []notionapi.RichText{{Type: notionapi.ObjectTypeText, Text: &notionapi.Text{Content: data.ThreadSummary}}}},
-		})
+		bulletBlocks := textToBulletPoints(data.ThreadSummary)
+		blocks = append(blocks, bulletBlocks...)
 	}
 
 	return blocks

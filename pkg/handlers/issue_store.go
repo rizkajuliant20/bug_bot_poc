@@ -48,6 +48,12 @@ func (s *IssueStore) Delete(key string) {
 	delete(s.store, key)
 }
 
+func (s *IssueStore) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.store = make(map[string]*IssueData)
+}
+
 func GetIssueStore() *IssueStore {
 	return globalIssueStore
 }

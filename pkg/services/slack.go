@@ -9,8 +9,9 @@ import (
 )
 
 type SlackService struct {
-	client *slack.Client
-	socket *socketmode.Client
+	client   *slack.Client
+	socket   *socketmode.Client
+	botToken string
 }
 
 func NewSlackService(botToken, appToken string) *SlackService {
@@ -26,8 +27,9 @@ func NewSlackService(botToken, appToken string) *SlackService {
 	)
 
 	return &SlackService{
-		client: client,
-		socket: socket,
+		client:   client,
+		socket:   socket,
+		botToken: botToken,
 	}
 }
 

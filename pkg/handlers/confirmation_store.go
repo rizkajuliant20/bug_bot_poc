@@ -18,6 +18,7 @@ type ConfirmationData struct {
 	SlackThreadURL string
 	ThreadMessages []slack.Message
 	ThreadSummary  string
+	MediaFiles     []services.MediaFile
 	TeamID         string
 	Channel        string
 	ThreadTS       string
@@ -73,4 +74,12 @@ func DeleteConfirmationData(id string) {
 	defer confirmationMutex.Unlock()
 
 	delete(confirmationStore, id)
+}
+
+// ClearConfirmationStore clears all confirmation data (used on bot startup)
+func ClearConfirmationStore() {
+	confirmationMutex.Lock()
+	defer confirmationMutex.Unlock()
+
+	confirmationStore = make(map[string]*ConfirmationData)
 }
