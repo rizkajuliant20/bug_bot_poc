@@ -18,6 +18,7 @@ type NotionService struct {
 	databaseID notionapi.DatabaseID
 	apiToken   string
 	logger     *logger.Logger
+	userCache  map[string]notionapi.User // Cache users by name for quick lookup
 }
 
 type MediaFile struct {
@@ -49,12 +50,49 @@ type BugTicketData struct {
 
 func NewNotionService(apiKey, databaseID string, log *logger.Logger) *NotionService {
 	client := notionapi.NewClient(notionapi.Token(apiKey))
-	return &NotionService{
+	service := &NotionService{
 		client:     client,
 		databaseID: notionapi.DatabaseID(databaseID),
 		apiToken:   apiKey,
 		logger:     log,
+		userCache:  make(map[string]notionapi.User),
 	}
+
+	// Fetch and cache users on initialization
+	service.fetchAndCacheUsers()
+
+	return service
+}
+
+// fetchAndCacheUsers fetches all Notion users and caches them by name
+func (s *NotionService) fetchAndCacheUsers() {
+	users, err := s.client.User.List(context.Background(), &notionapi.Pagination{})
+	if err != nil {
+		s.logger.Error("Failed to fetch Notion users", err, nil)
+		return
+	}
+
+	for _, user := range users.Results {
+		if user.Name != "" {
+			s.userCache[user.Name] = user
+			s.logger.Info("Cached Notion user", map[string]interface{}{
+				"name": user.Name,
+				"id":   user.ID,
+			})
+		}
+	}
+
+	s.logger.Success("Notion users cached", map[string]interface{}{
+		"count": len(s.userCache),
+	})
+}
+
+// getUserByName returns Notion user ID by name
+func (s *NotionService) getUserByName(name string) *notionapi.User {
+	if user, ok := s.userCache[name]; ok {
+		return &user
+	}
+	return nil
 }
 
 // getAssigneeByApp returns assignee name based on app tags
@@ -138,17 +176,36 @@ func (s *NotionService) CreateBugTicket(data *BugTicketData, slackService *Slack
 
 	// Auto-assign based on app tags
 	if data.Diagnosis != nil && len(data.Diagnosis.Tags) > 0 {
-		assignee := getAssigneeByApp(data.Diagnosis.Tags)
-		if assignee != "" {
-			// Note: Assignee in Notion is Person type which requires user IDs
-			// For now, we'll add as text in Summary or create a separate text field
-			// Alternatively, can be set manually in Notion based on tags
+		assigneeName := getAssigneeByApp(data.Diagnosis.Tags)
+		if assigneeName != "" {
 			s.logger.Info("Auto-assignee determined", map[string]interface{}{
-				"assignee": assignee,
+				"assignee": assigneeName,
 				"tags":     data.Diagnosis.Tags,
 			})
-			// Store in data for later use if needed
-			data.Assignee = assignee
+
+			// Get Notion user by name and set Assignee field
+			user := s.getUserByName(assigneeName)
+			if user != nil {
+				properties["Assignee"] = notionapi.PeopleProperty{
+					Type: notionapi.PropertyTypePeople,
+					People: []notionapi.User{
+						{
+							Object: notionapi.ObjectTypeUser,
+							ID:     user.ID,
+						},
+					},
+				}
+				s.logger.Success("Auto-assigned ticket", map[string]interface{}{
+					"assignee": assigneeName,
+					"userID":   user.ID,
+				})
+			} else {
+				s.logger.Error("Assignee not found in Notion users", nil, map[string]interface{}{
+					"assignee": assigneeName,
+				})
+			}
+
+			data.Assignee = assigneeName
 		}
 	}
 
