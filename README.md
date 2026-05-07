@@ -1,6 +1,6 @@
 # Slack Bug Bot
 
-A high-performance Slack bot written in Go that automatically creates bug tickets in Notion with AI-powered diagnosis and **multi-issue detection**.
+A high-performance Slack bot written in Go that automatically creates bug tickets in Notion with **GPT-4o-powered diagnosis**, **multi-issue detection**, and **auto-assignment**.
 
 ## Why Go?
 
@@ -12,8 +12,8 @@ Built with Go for optimal performance and deployment simplicity:
 
 ## ✨ Key Features
 
-### 🎯 Multi-Issue Detection (NEW!)
-Bot automatically analyzes thread + all replies to detect **multiple distinct issues** and lets you choose which ones to create tickets for.
+### 🎯 Multi-Issue Detection with Interactive UI
+Bot automatically analyzes thread + all replies to detect **multiple distinct issues** with a clean, interactive interface.
 
 **Example:**
 ```
@@ -47,13 +47,23 @@ Which issues would you like to create tickets for?
 - Click specific issue to create only that ticket
 - Click "Create All" to create all tickets at once
 - Click "Cancel" to abort
-- Buttons auto-disable after click to prevent double submission
+- **Processing indicators**: "⏳ Creating ticket... Please wait"
+- **Message updates**: Summary replaced with success message + "View in Notion" button
+- **Clean UX**: No duplicate messages, single message updates in place
 
-### 🤖 AI-Powered Analysis
+### 🤖 AI-Powered Analysis (GPT-4o)
+- **Model**: GPT-4o for superior context understanding and accuracy
 - **Smart Diagnosis**: Severity, category, priority, root cause analysis
 - **App Detection**: Auto-detects Jago App, Jagoan App, Depot Portal, Service
 - **Thread Summarization**: Condenses long discussions into key points
 - **Multi-Issue Recognition**: Identifies distinct problems in conversations
+- **Accurate Titles**: Extracts exact keywords from bug description (no hallucination)
+
+### 👥 Auto-Assignment
+- **Jago App** bugs → Auto-assigned to **Janaka Jati Lasmana**
+- **Jagoan App** bugs → Auto-assigned to **Santo Malau**
+- Fetches and caches all Notion users on startup
+- Maps assignee names to Notion user IDs automatically
 
 ### 💬 Slack Integration
 - **Triggers**: 
@@ -180,12 +190,14 @@ services:
     restart: unless-stopped
 ```
 
-## Deployment Options
+## 🚀 Infrastructure Deployment
 
-### 1. Single Binary Deployment
+### Option 1: VPS/Server (Recommended for Production)
+
+#### 1.1 Single Binary Deployment
 
 ```bash
-# Build for Linux
+# Build for Linux (from local machine)
 GOOS=linux GOARCH=amd64 go build -o bug-bot ./cmd/bot
 
 # Copy to server
@@ -198,7 +210,7 @@ cd /opt/bug-bot
 ./bug-bot
 ```
 
-### 2. Systemd Service
+#### 1.2 Systemd Service (Auto-restart on failure)
 
 Create `/etc/systemd/system/bug-bot.service`:
 
@@ -214,6 +226,13 @@ WorkingDirectory=/opt/bug-bot
 ExecStart=/opt/bug-bot/bug-bot
 Restart=always
 RestartSec=10
+StandardOutput=append:/var/log/bug-bot/stdout.log
+StandardError=append:/var/log/bug-bot/stderr.log
+
+# Environment variables (or use EnvironmentFile=/opt/bug-bot/.env)
+Environment="SLACK_BOT_TOKEN=xoxb-..."
+Environment="NOTION_API_KEY=secret_..."
+Environment="OPENAI_API_KEY=sk-..."
 
 [Install]
 WantedBy=multi-user.target
@@ -222,45 +241,293 @@ WantedBy=multi-user.target
 Enable and start:
 
 ```bash
+# Create log directory
+sudo mkdir -p /var/log/bug-bot
+sudo chown bugbot:bugbot /var/log/bug-bot
+
+# Enable and start service
 sudo systemctl enable bug-bot
 sudo systemctl start bug-bot
 sudo systemctl status bug-bot
+
+# View logs
+sudo journalctl -u bug-bot -f
 ```
 
-### 3. Cloud Platforms
+#### 1.3 Docker on VPS
 
-#### Railway
+```bash
+# Build image
+docker build -t bug-bot:latest .
+
+# Run container with auto-restart
+docker run -d \
+  --name bug-bot \
+  --restart unless-stopped \
+  --env-file .env \
+  -v $(pwd)/logs:/root/logs \
+  bug-bot:latest
+
+# View logs
+docker logs -f bug-bot
+
+# Update deployment
+docker stop bug-bot
+docker rm bug-bot
+docker build -t bug-bot:latest .
+docker run -d --name bug-bot --restart unless-stopped --env-file .env -v $(pwd)/logs:/root/logs bug-bot:latest
+```
+
+### Option 2: Cloud Platforms (PaaS)
+
+#### 2.1 Railway.app (Easiest)
+
+**Pros:** Free tier, auto-deploy from GitHub, simple setup
+**Cons:** Limited free hours
+
 ```bash
 # Install Railway CLI
 npm install -g @railway/cli
 
-# Deploy
+# Login and deploy
 railway login
 railway init
 railway up
+
+# Set environment variables
+railway variables set SLACK_BOT_TOKEN=xoxb-...
+railway variables set NOTION_API_KEY=secret_...
+railway variables set OPENAI_API_KEY=sk-...
+
+# View logs
+railway logs
 ```
 
-#### Fly.io
+Or use GitHub integration:
+1. Connect GitHub repo to Railway
+2. Set environment variables in Railway dashboard
+3. Auto-deploys on every push to main
+
+#### 2.2 Fly.io (Recommended for Production)
+
+**Pros:** Global edge deployment, generous free tier, persistent volumes
+**Cons:** Slightly more complex setup
+
 ```bash
 # Install flyctl
 curl -L https://fly.io/install.sh | sh
 
+# Login
+fly auth login
+
+# Initialize (creates fly.toml)
+fly launch --name bug-bot --region sin
+
+# Set secrets
+fly secrets set SLACK_BOT_TOKEN=xoxb-...
+fly secrets set NOTION_API_KEY=secret_...
+fly secrets set OPENAI_API_KEY=sk-...
+
 # Deploy
-fly launch
 fly deploy
+
+# View logs
+fly logs
+
+# Scale (if needed)
+fly scale count 1
+fly scale vm shared-cpu-1x
+
+# SSH into instance
+fly ssh console
 ```
 
-#### Google Cloud Run
+**fly.toml** example:
+```toml
+app = "bug-bot"
+primary_region = "sin"
+
+[build]
+  builder = "paketobuildpacks/builder:base"
+
+[env]
+  PORT = "8080"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+```
+
+#### 2.3 Google Cloud Run (Serverless)
+
+**Pros:** Auto-scaling, pay-per-use, managed infrastructure
+**Cons:** Cold starts, more expensive for always-on services
+
 ```bash
-# Build and push
+# Build and push to Google Container Registry
 gcloud builds submit --tag gcr.io/PROJECT_ID/bug-bot
 
-# Deploy
+# Deploy to Cloud Run
 gcloud run deploy bug-bot \
   --image gcr.io/PROJECT_ID/bug-bot \
   --platform managed \
-  --region us-central1 \
-  --set-env-vars-file .env
+  --region asia-southeast1 \
+  --allow-unauthenticated \
+  --set-env-vars SLACK_BOT_TOKEN=xoxb-...,NOTION_API_KEY=secret_...,OPENAI_API_KEY=sk-... \
+  --memory 512Mi \
+  --cpu 1 \
+  --min-instances 1 \
+  --max-instances 1
+
+# View logs
+gcloud run logs tail bug-bot
+```
+
+#### 2.4 AWS ECS/Fargate
+
+**Pros:** Full AWS ecosystem integration, highly scalable
+**Cons:** More complex, higher cost
+
+```bash
+# Build and push to ECR
+aws ecr create-repository --repository-name bug-bot
+docker build -t bug-bot .
+docker tag bug-bot:latest AWS_ACCOUNT.dkr.ecr.REGION.amazonaws.com/bug-bot:latest
+aws ecr get-login-password --region REGION | docker login --username AWS --password-stdin AWS_ACCOUNT.dkr.ecr.REGION.amazonaws.com
+docker push AWS_ACCOUNT.dkr.ecr.REGION.amazonaws.com/bug-bot:latest
+
+# Create ECS task definition and service via AWS Console or CLI
+# Set environment variables in task definition
+```
+
+#### 2.5 DigitalOcean App Platform
+
+**Pros:** Simple, affordable, good for small teams
+**Cons:** Less flexible than VPS
+
+```bash
+# Via web UI:
+1. Connect GitHub repo
+2. Select branch (main)
+3. Set environment variables
+4. Deploy
+
+# Or use doctl CLI
+doctl apps create --spec app.yaml
+```
+
+**app.yaml** example:
+```yaml
+name: bug-bot
+services:
+- name: bot
+  github:
+    repo: rizkajuliant20/bug_bot_poc
+    branch: main
+  envs:
+  - key: SLACK_BOT_TOKEN
+    value: xoxb-...
+  - key: NOTION_API_KEY
+    value: secret_...
+  - key: OPENAI_API_KEY
+    value: sk-...
+  instance_count: 1
+  instance_size_slug: basic-xxs
+```
+
+### Option 3: Kubernetes (Enterprise)
+
+For large-scale deployments:
+
+```yaml
+# deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bug-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bug-bot
+  template:
+    metadata:
+      labels:
+        app: bug-bot
+    spec:
+      containers:
+      - name: bug-bot
+        image: bug-bot:latest
+        env:
+        - name: SLACK_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: bug-bot-secrets
+              key: slack-bot-token
+        - name: NOTION_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: bug-bot-secrets
+              key: notion-api-key
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: bug-bot-secrets
+              key: openai-api-key
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+```
+
+Deploy:
+```bash
+kubectl apply -f deployment.yaml
+kubectl apply -f secrets.yaml
+```
+
+### Deployment Comparison
+
+| Platform | Cost | Ease | Scalability | Best For |
+|----------|------|------|-------------|----------|
+| VPS + Systemd | $5-20/mo | Medium | Manual | Production, full control |
+| Railway | Free-$20/mo | Easy | Auto | Quick start, small teams |
+| Fly.io | Free-$10/mo | Medium | Auto | Production, global edge |
+| Cloud Run | Pay-per-use | Medium | Auto | Serverless, variable load |
+| DigitalOcean | $5-12/mo | Easy | Manual | Simple production |
+| Kubernetes | $50+/mo | Hard | High | Enterprise, multi-service |
+
+### Monitoring & Maintenance
+
+```bash
+# Health check endpoint (add to main.go if needed)
+curl http://your-server:3000/health
+
+# View logs
+# VPS: tail -f /var/log/bug-bot/stdout.log
+# Railway: railway logs
+# Fly.io: fly logs
+# Cloud Run: gcloud run logs tail bug-bot
+
+# Restart service
+# VPS: sudo systemctl restart bug-bot
+# Railway: railway restart
+# Fly.io: fly apps restart bug-bot
+# Cloud Run: gcloud run services update bug-bot --image gcr.io/PROJECT_ID/bug-bot
+
+# Update deployment
+git push origin main  # Auto-deploys on Railway, Fly.io (with GitHub Actions)
 ```
 
 ## Project Structure
