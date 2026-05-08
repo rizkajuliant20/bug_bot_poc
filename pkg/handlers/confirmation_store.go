@@ -42,11 +42,7 @@ func StoreConfirmationData(id string, data *ConfirmationData) {
 	// Debug: log store operation
 	println("DEBUG: Stored confirmation data:", id, "Total stored:", len(confirmationStore))
 
-	// Auto-cleanup after 1 hour
-	go func() {
-		time.Sleep(1 * time.Hour)
-		DeleteConfirmationData(id)
-	}()
+	// No auto-cleanup - data stays until explicitly deleted
 }
 
 // GetConfirmationData retrieves confirmation data

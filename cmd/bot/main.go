@@ -475,7 +475,7 @@ func handleButtonInteraction(callback slack.InteractionCallback, bugHandler *han
 				),
 				slack.NewActionBlock(
 					"",
-					slack.NewButtonBlockElement("", "", &slack.TextBlockObject{
+					slack.NewButtonBlockElement("view_notion_single", "", &slack.TextBlockObject{
 						Type: slack.PlainTextType,
 						Text: "📝 View in Notion",
 					}).WithURL(notionURL).WithStyle(slack.StylePrimary),
@@ -584,7 +584,7 @@ func handleConfirmationButton(callback slack.InteractionCallback, action *slack.
 			),
 			slack.NewActionBlock(
 				"",
-				slack.NewButtonBlockElement("", "", &slack.TextBlockObject{
+				slack.NewButtonBlockElement("view_notion_single", "", &slack.TextBlockObject{
 					Type: slack.PlainTextType,
 					Text: "📝 View in Notion",
 				}).WithURL(notionURL).WithStyle(slack.StylePrimary),

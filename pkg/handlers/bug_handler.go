@@ -136,29 +136,10 @@ func (h *BugHandler) HandleBugReport(channel, ts, threadTS, user, text, teamID s
 		})
 
 		// Send interactive message with buttons
-		messageTS := h.sendMultiIssueSelection(channel, threadTS, multiIssue, bugDescription, threadMessages, reporterName, teamID)
+		_ = h.sendMultiIssueSelection(channel, threadTS, multiIssue, bugDescription, threadMessages, reporterName, teamID)
 		h.logger.Success("Multi-issue selection sent to user", nil)
 
-		// Auto-expire after 10 minutes
-		go func() {
-			time.Sleep(10 * time.Minute)
-
-			// Check if still in store (not yet processed)
-			if _, exists := GetIssueStore().Get(storeKey); exists {
-				h.logger.Info("Multi-issue selection expired, cleaning up", map[string]interface{}{
-					"storeKey": storeKey,
-				})
-
-				// Delete the message with buttons
-				h.slackService.DeleteMessage(channel, messageTS)
-
-				// Clean up store
-				GetIssueStore().Delete(storeKey)
-
-				// Send expiration notice
-				h.slackService.SendThreadReply(channel, threadTS, "⏱️ Issue selection expired. Please react with 🐞 again to create tickets.", nil)
-			}
-		}()
+		// No auto-expiration - messages stay until user interacts
 
 		return nil // Wait for user interaction
 	}
@@ -290,11 +271,11 @@ func (h *BugHandler) SendBugNotification(channel, title, reporter, notionURL, sl
 		),
 		slack.NewActionBlock(
 			"",
-			slack.NewButtonBlockElement("", "", &slack.TextBlockObject{
+			slack.NewButtonBlockElement("view_notion_confirmation", "", &slack.TextBlockObject{
 				Type: slack.PlainTextType,
 				Text: "📝 View in Notion",
 			}).WithURL(notionURL).WithStyle(slack.StylePrimary),
-			slack.NewButtonBlockElement("", "", &slack.TextBlockObject{
+			slack.NewButtonBlockElement("view_thread", "", &slack.TextBlockObject{
 				Type: slack.PlainTextType,
 				Text: "💬 View Thread",
 			}).WithURL(slackThreadURL),
@@ -352,7 +333,7 @@ func (h *BugHandler) buildSuccessBlocks(title string, diagnosis *services.BugDia
 		),
 		slack.NewActionBlock(
 			"",
-			slack.NewButtonBlockElement("", "", &slack.TextBlockObject{
+			slack.NewButtonBlockElement("view_notion_multi", "", &slack.TextBlockObject{
 				Type: slack.PlainTextType,
 				Text: "View in Notion",
 			}).WithURL(notionURL).WithStyle(slack.StylePrimary),
@@ -693,7 +674,7 @@ func (h *BugHandler) SendSingleIssueSuccess(channel, threadTS, ts string, bugTit
 			"view_ticket",
 			slack.NewButtonBlockElement(
 				"view_notion",
-				notionURL,
+				"view_notion_result",
 				&slack.TextBlockObject{
 					Type: slack.PlainTextType,
 					Text: "📝 View in Notion",
